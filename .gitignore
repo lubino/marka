@@ -1,0 +1,31 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Swift Package Manager & Build Outputs
+/.build/
+/build/
+/.swiftpm/
+*.app
+*.dSYM.zip
+*.dSYM
+*.ipa
+*.dmg
+*.pkg
+
+# Xcode / IDEs
+xcuserdata/
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+.idea/
+.vscode/
+
+# Local secrets & environment files
+.env
+.env.*
+*.pem
+*.p12
+*.mobileprovision

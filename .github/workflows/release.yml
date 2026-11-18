@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.1.0)"
+        required: true
+        default: "v0.1.0"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build Universal macOS DMG & Publish Release
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure Swift 6+ toolchain
+        run: |
+          if ! swift --version | grep -qE "Swift version [6-9]\."; then
+            NEWEST_XCODE="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -n 1 || true)"
+            if [[ -n "$NEWEST_XCODE" ]]; then
+              sudo xcode-select -s "$NEWEST_XCODE/Contents/Developer"
+            fi
+          fi
+          swift --version
+
+      - name: Run unit tests
+        run: swift run MarkaTests
+
+      - name: Package Universal Marka.dmg & Marka-macos.zip
+        run: |
+          RAW_TAG="${GITHUB_REF_NAME:-${{ inputs.tag }}}"
+          CLEAN_VERSION="${RAW_TAG#v}"
+          VERSION="$CLEAN_VERSION" UNIVERSAL=1 ./scripts/package-dmg.sh
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || inputs.tag }}
+          generate_release_notes: true
+          files: |
+            build/Marka.dmg
+            build/Marka-macos.zip
+            build/SHA256SUMS.txt
+          body: |
+            ### Quick install
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/lubino/marka/main/install.sh | bash
+            ```
+
+            ### Direct DMG download
+            Download **`Marka.dmg`**, open it, and drag **`Marka.app`** into **Applications**.
+
+            Builds are ad-hoc signed. If macOS Gatekeeper blocks a browser-downloaded copy, run `xattr -cr /Applications/Marka.app` or click **Open Anyway** in **System Settings → Privacy & Security**.
