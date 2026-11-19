@@ -44,9 +44,60 @@ enum CellMarkdown {
     }
 }
 
-/// Table cell: shows rendered Markdown; switches to the raw source while it is being edited.
+extension CellMarkdown {
+    /// WYSIWYG editing: styles the cell's *source* in place — markers stay in the text (so the
+    /// Markdown is what gets saved) but are hidden, and content is bold / italic / code / link.
+    static func styleSource(_ storage: NSTextStorage, font: NSFont, color: NSColor, darkPaper: Bool) {
+        let full = NSRange(location: 0, length: storage.length)
+        guard full.length > 0 else { return }
+        storage.beginEditing()
+        storage.setAttributes([.font: font, .foregroundColor: color], range: full)
+        let spans = MarkdownSyntax.inlineSpans(in: storage.string)
+        for span in spans where span.role == .content {
+            switch span.kind {
+            case .inlineCode:
+                storage.addAttributes([
+                    .font: NSFont.monospacedSystemFont(ofSize: font.pointSize * 0.9, weight: .regular),
+                    .backgroundColor: Theme.inlineCodeBox(darkPaper: darkPaper)
+                ], range: span.range)
+            case .strikethrough:
+                storage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: span.range)
+            case .link, .image:
+                storage.addAttributes([
+                    .foregroundColor: NSColor.systemBlue,
+                    .underlineStyle: NSUnderlineStyle.single.rawValue
+                ], range: span.range)
+            default:
+                break
+            }
+        }
+        for span in spans where span.role == .content && (span.kind == .strong || span.kind == .emphasis) {
+            let trait: NSFontTraitMask = span.kind == .strong ? .boldFontMask : .italicFontMask
+            storage.enumerateAttribute(.font, in: span.range) { value, range, _ in
+                let base = (value as? NSFont) ?? font
+                storage.addAttribute(.font, value: NSFontManager.shared.convert(base, toHaveTrait: trait), range: range)
+            }
+        }
+        for span in spans where span.role == .marker {
+            storage.addAttributes([
+                .font: NSFont.systemFont(ofSize: 0.01),
+                .foregroundColor: NSColor.clear,
+                .kern: -1
+            ], range: span.range)
+        }
+        storage.endEditing()
+    }
+}
+
+/// Table cell: shows rendered Markdown; while edited it keeps the Markdown source but shows it
+/// WYSIWYG (markers hidden), restyled on every change.
 final class MarkdownCellField: NSTextField {
     var render: ((String) -> NSAttributedString)?
+    /// Styles the field editor's source while editing (set by the table).
+    var styleEditor: ((NSTextStorage) -> Void)?
+    /// Called when the cell becomes first responder — a click, Tab, an arrow key, or code.
+    var onFocus: ((MarkdownCellField) -> Void)?
+    var baseTypingAttributes: [NSAttributedString.Key: Any] = [:]
     private(set) var isEditingSource = false
 
     /// The cell's Markdown source.
@@ -56,17 +107,36 @@ final class MarkdownCellField: NSTextField {
 
     /// What to commit: the live editor text while editing, else the stored source (never the
     /// rendered text, which has its markers stripped).
-    var currentSource: String { isEditingSource ? stringValue : raw }
+    var currentSource: String {
+        guard isEditingSource else { return raw }
+        return (currentEditor() as? NSTextView)?.string ?? raw
+    }
 
     override func becomeFirstResponder() -> Bool {
         isEditingSource = true
         stringValue = raw
-        return super.becomeFirstResponder()
+        let became = super.becomeFirstResponder()
+        if became {
+            restyleEditor()
+            onFocus?(self)
+        }
+        return became
+    }
+
+    /// Re-apply WYSIWYG styling to the field editor's text (attributes only, selection kept).
+    func restyleEditor() {
+        guard isEditingSource, let editor = currentEditor() as? NSTextView, let storage = editor.textStorage else { return }
+        let selection = editor.selectedRanges
+        styleEditor?(storage)
+        editor.selectedRanges = selection
+        editor.typingAttributes = baseTypingAttributes
     }
 
     override func textDidEndEditing(_ notification: Notification) {
-        super.textDidEndEditing(notification)   // the delegate commits `stringValue` (raw) here
-        let edited = stringValue
+        // Capture the source *before* AppKit ends editing: afterwards `stringValue` is the field
+        // editor's display value, which lost the hidden markers ("**Bold**" → "Bold").
+        let edited = (currentEditor() as? NSTextView)?.string ?? stringValue
+        super.textDidEndEditing(notification)   // the delegate commits `currentSource` here
         isEditingSource = false
         raw = edited
     }

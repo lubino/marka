@@ -7,6 +7,8 @@ public enum StyleKind: Equatable, Sendable {
     case emphasis
     case strikethrough
     case inlineCode
+    /// `$…$` — rendered as math in WYSIWYG.
+    case inlineMath
     case codeBlock(language: String?)
     case blockquote
     case list(ordered: Bool, task: Bool)
@@ -51,6 +53,16 @@ public enum MarkdownSyntax {
         public var language: String?
         public var content: NSRange
         public var innerText: String
+    }
+
+    /// Fenced blocks Marka draws instead of showing as code: ```math / $$…$$ and ```mermaid.
+    public static func isRendered(language: String?) -> Bool {
+        guard let language = language?.split(separator: " ").first?.lowercased() else { return false }
+        return language == "math" || language == "mermaid" || language == "latex" || language == "tex"
+    }
+
+    public static func renderedBlocks(in source: String) -> [FencedCodeBlock] {
+        codeBlocks(in: source).filter { isRendered(language: $0.language) }
     }
 
     public static func codeBlocks(in source: String) -> [FencedCodeBlock] {
@@ -149,6 +161,12 @@ public enum MarkdownSyntax {
             if isThematicBreak(trimmed) {
                 spans.append(StyleSpan(range: line.range, kind: .thematicBreak, role: .content, group: line.range))
                 i += 1
+                continue
+            }
+            if trimmed.hasPrefix("$$") {
+                let (block, next) = parseDisplayMath(lines: lines, start: i)
+                spans.append(contentsOf: block)
+                i = next
                 continue
             }
             if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
@@ -349,6 +367,42 @@ public enum MarkdownSyntax {
         return (spans, lines.count)
     }
 
+    /// `$$ … $$` display math (one line or several) — a block like a ```math fence.
+    static func parseDisplayMath(lines: [Line], start: Int) -> ([StyleSpan], Int) {
+        let open = lines[start]
+        let kind = StyleKind.codeBlock(language: "math")
+        let text = open.text as NSString
+        let lead = open.text.prefix { $0 == " " }.utf16.count
+        // Single line: $$ x^2 $$
+        let afterOpen = text.substring(from: min(text.length, lead + 2))
+        if afterOpen.trimmingCharacters(in: .whitespaces).count >= 2, afterOpen.trimmingCharacters(in: .whitespaces).hasSuffix("$$") {
+            let closeOffset = (afterOpen as NSString).range(of: "$$", options: .backwards).location
+            let base = open.range.location + lead
+            var spans = [StyleSpan(range: NSRange(location: base, length: 2), kind: kind, role: .marker, group: open.range)]
+            if closeOffset > 0 {
+                spans.append(StyleSpan(range: NSRange(location: base + 2, length: closeOffset), kind: kind, role: .content, group: open.range))
+            }
+            let closeStart = base + 2 + closeOffset
+            spans.append(StyleSpan(range: NSRange(location: closeStart, length: NSMaxRange(open.range) - closeStart), kind: kind, role: .marker, group: open.range))
+            return (spans, start + 1)
+        }
+        // Several lines: $$ … $$ on their own lines.
+        var end = start + 1
+        while end < lines.count, !lines[end].text.trimmingCharacters(in: .whitespaces).hasSuffix("$$") { end += 1 }
+        guard end < lines.count else {
+            return ([StyleSpan(range: open.range, kind: .paragraph, role: .content, group: open.range)], start + 1)
+        }
+        let last = lines[end]
+        let group = union(open.range, last.range)
+        var spans = [StyleSpan(range: open.range, kind: kind, role: .marker, group: group)]
+        let innerStart = NSMaxRange(open.range) + 1
+        if last.range.location > innerStart {
+            spans.append(StyleSpan(range: NSRange(location: innerStart, length: last.range.location - innerStart), kind: kind, role: .content, group: group))
+        }
+        spans.append(StyleSpan(range: last.range, kind: kind, role: .marker, group: group))
+        return (spans, end + 1)
+    }
+
     static func parseQuote(ns: NSString, lines: [Line], start: Int) -> ([StyleSpan], Int) {
         var end = start
         while end < lines.count {
@@ -531,14 +585,22 @@ public enum MarkdownSyntax {
 
     static func parseInline(_ ns: NSString, range: NSRange) -> [StyleSpan] {
         guard range.length > 0, NSMaxRange(range) <= ns.length else { return [] }
-        var occupied = Array(repeating: false, count: ns.length)
+        // Covers only this range (indexed from `base`): sizing it to the whole document made
+        // parsing O(paragraphs × document length).
+        let base = range.location
+        var occupied = Array(repeating: false, count: range.length)
         var spans: [StyleSpan] = []
 
+        func isOccupied(_ i: Int) -> Bool {
+            let k = i - base
+            return k >= 0 && k < occupied.count && occupied[k]
+        }
         func mark(_ r: NSRange) {
             let end = NSMaxRange(r)
             var i = r.location
-            while i < end && i < occupied.count {
-                occupied[i] = true
+            while i < end {
+                let k = i - base
+                if k >= 0 && k < occupied.count { occupied[k] = true }
                 i += 1
             }
         }
@@ -546,7 +608,7 @@ public enum MarkdownSyntax {
             let end = NSMaxRange(r)
             var i = r.location
             while i < end {
-                if i < occupied.count && occupied[i] { return false }
+                if isOccupied(i) { return false }
                 i += 1
             }
             return true
@@ -591,7 +653,7 @@ public enum MarkdownSyntax {
 
         i = range.location
         while i < limit {
-            if occupied.indices.contains(i), occupied[i] { i += 1; continue }
+            if isOccupied(i) { i += 1; continue }
             if ns.character(at: i) == 96, (i == range.location || ns.character(at: i - 1) != 92) {
                 var ticks = 1
                 while i + ticks < limit && ns.character(at: i + ticks) == 96 { ticks += 1 }
@@ -621,12 +683,40 @@ public enum MarkdownSyntax {
             }
         }
 
+        // Inline math `$…$` (GitHub rules): no space just inside the dollars, no digit right after
+        // the closing one — so prices like "$5 and $10" stay text.
+        i = range.location
+        while i < limit {
+            if isOccupied(i) || ns.character(at: i) != 36 || (i > range.location && ns.character(at: i - 1) == 92) { i += 1; continue }
+            let first = i + 1
+            guard first < limit, ns.character(at: first) != 36, ns.character(at: first) != 32 else { i += 1; continue }
+            var j = first
+            var found = -1
+            while j < limit {
+                if isOccupied(j) { break }
+                let ch = ns.character(at: j)
+                if ch == 36, ns.character(at: j - 1) != 92, ns.character(at: j - 1) != 32,
+                   !(j + 1 < limit && (48...57).contains(ns.character(at: j + 1))) {
+                    found = j
+                    break
+                }
+                j += 1
+            }
+            guard found > first else { i += 1; continue }
+            let group = NSRange(location: i, length: found + 1 - i)
+            spans.append(StyleSpan(range: NSRange(location: i, length: 1), kind: .inlineMath, role: .marker, group: group))
+            spans.append(StyleSpan(range: NSRange(location: first, length: found - first), kind: .inlineMath, role: .content, group: group))
+            spans.append(StyleSpan(range: NSRange(location: found, length: 1), kind: .inlineMath, role: .marker, group: group))
+            mark(group)
+            i = found + 1
+        }
+
         func delimited(_ marker: String, kind: StyleKind) {
             let m = marker as NSString
             let mlen = m.length
             var p = range.location
             while p + mlen * 2 <= limit {
-                if occupied.indices.contains(p), occupied[p] { p += 1; continue }
+                if isOccupied(p) { p += 1; continue }
                 if match(ns, at: p, marker: m), p == range.location || ns.character(at: p - 1) != 92 {
                     var q = p + mlen
                     while q + mlen <= limit {

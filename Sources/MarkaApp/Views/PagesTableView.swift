@@ -40,12 +40,30 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
     private var columnWidths: [CGFloat] = []
 
     // Editing chrome: only while the cursor is in one of this table's cells.
-    let editBar = TableEditBar(frame: NSRect(x: 0, y: 0, width: TableEditBar.width, height: TableEditBar.height))
+    enum Command: CaseIterable {
+        case rowAbove, rowBelow, columnLeft, columnRight, deleteRow, deleteColumn
+
+        var title: String {
+            switch self {
+            case .rowAbove: return "Insert Row Above"
+            case .rowBelow: return "Insert Row Below"
+            case .columnLeft: return "Insert Column Left"
+            case .columnRight: return "Insert Column Right"
+            case .deleteRow: return "Delete Row"
+            case .deleteColumn: return "Delete Column"
+            }
+        }
+    }
+
+    /// Green + on each side of a grip (where the new row / column appears) and a red − beside it.
+    private(set) var buttons: [Command: TableCircleButton] = [:]
     let rowGrip = TableGripView(axis: .row)
     let columnGrip = TableGripView(axis: .column)
     private let dropIndicator = NSView()
     private(set) var isEditingChromeVisible = false
-    private var chromeViews: [NSView] { [editBar, rowGrip, columnGrip, dropIndicator] }
+    private var chromeViews: [NSView] {
+        [rowGrip, columnGrip, dropIndicator] + Command.allCases.compactMap { buttons[$0] }
+    }
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -70,7 +88,13 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
         wantsLayer = true
         clipsToBounds = false
         layer?.backgroundColor = NSColor.clear.cgColor
-        editBar.onCommand = { [weak self] command in self?.perform(command) }
+        for command in Command.allCases {
+            let kind: TableCircleButton.Kind = (command == .deleteRow || command == .deleteColumn) ? .remove : .add
+            let button = TableCircleButton(kind: kind, title: command.title)
+            button.target = self
+            button.action = #selector(circleTapped(_:))
+            buttons[command] = button
+        }
         rowGrip.onDrag = { [weak self] phase, point in self?.dragRow(phase, point) }
         columnGrip.onDrag = { [weak self] phase, point in self?.dragColumn(phase, point) }
         dropIndicator.wantsLayer = true
@@ -163,7 +187,7 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
         }
         while slices.count < pageSlices.count {
             let slice = TableSliceView(parent: self)
-            addSubview(slice, positioned: .below, relativeTo: editBar)
+            addSubview(slice, positioned: .below, relativeTo: rowGrip)
             slices.append(slice)
         }
         let startY = flow?.startY ?? 0
@@ -227,9 +251,7 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
             return
         }
         isEditingChromeVisible = visible
-        editBar.isHidden = !visible
-        rowGrip.isHidden = !visible
-        columnGrip.isHidden = !visible
+        for view in chromeViews { view.isHidden = !visible }
         dropIndicator.isHidden = true
         if visible { layoutEditChrome() }
     }
@@ -245,44 +267,62 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
         slices.first { $0.spec.rows.contains { $0.storageRow == storageRow && !$0.isRepeatedHeader } } ?? slices.first
     }
 
+    private func place(_ command: Command, centeredAt point: CGPoint, visible: Bool = true) {
+        guard let button = buttons[command] else { return }
+        button.isHidden = !visible
+        let size = TableCircleButton.size
+        button.frame = CGRect(x: point.x - size / 2, y: point.y - size / 2, width: size, height: size)
+    }
+
+    /// Row cluster in the left margin: grip beside the row, + on the row's top and bottom edges,
+    /// − to the grip's left. Column cluster above the table: grip above the column, + on its left
+    /// and right edges, − above the grip. The header row has only "+ below".
     private func layoutEditChrome() {
-        guard isEditingChromeVisible, let last = slices.last else { return }
-        // Bar: floating under the table, right-aligned.
-        editBar.frame = CGRect(
-            x: max(0, tableWidth - TableEditBar.width),
-            y: last.frame.maxY - Self.bottomPad + 4,
-            width: TableEditBar.width,
-            height: TableEditBar.height
-        )
-        // Row grip: in the left margin beside the focused row (body rows only — the header stays).
-        if selectedRow >= 2, let y = primaryY(for: selectedRow) {
-            rowGrip.isHidden = false
+        guard isEditingChromeVisible else { return }
+        let gap: CGFloat = 3
+        let size = TableCircleButton.size
+        if let y = primaryY(for: selectedRow) {
+            let gripX = -TableGripView.rowSize.width - 8
             rowGrip.frame = CGRect(
-                x: -TableGripView.rowSize.width - 5,
+                x: gripX,
                 y: y + (Self.rowHeight - TableGripView.rowSize.height) / 2,
                 width: TableGripView.rowSize.width,
                 height: TableGripView.rowSize.height
             )
-        } else {
-            rowGrip.isHidden = true
+            let body = selectedRow >= 2
+            rowGrip.isHidden = !body
+            let midX = rowGrip.frame.midX
+            place(.rowAbove, centeredAt: CGPoint(x: midX, y: y), visible: body)
+            place(.rowBelow, centeredAt: CGPoint(x: midX, y: y + Self.rowHeight))
+            place(.deleteRow, centeredAt: CGPoint(x: rowGrip.frame.minX - gap - size / 2, y: rowGrip.frame.midY), visible: body)
         }
-        // Column grip: above the focused column, on the page that shows the focused row.
         if selectedColumn < columnWidths.count, let piece = slice(showing: selectedRow) {
-            columnGrip.isHidden = false
+            let x = columnX(selectedColumn)
             let w = columnWidths[selectedColumn]
+            columnGrip.isHidden = false
             columnGrip.frame = CGRect(
-                x: columnX(selectedColumn) + (w - TableGripView.columnSize.width) / 2,
-                y: piece.frame.minY - TableGripView.columnSize.height - 3,
+                x: x + (w - TableGripView.columnSize.width) / 2,
+                y: piece.frame.minY - TableGripView.columnSize.height - 6,
                 width: TableGripView.columnSize.width,
                 height: TableGripView.columnSize.height
             )
+            let midY = columnGrip.frame.midY
+            place(.columnLeft, centeredAt: CGPoint(x: x, y: midY))
+            place(.columnRight, centeredAt: CGPoint(x: x + w, y: midY))
+            place(.deleteColumn, centeredAt: CGPoint(x: columnGrip.frame.midX, y: columnGrip.frame.minY - gap - size / 2))
         } else {
             columnGrip.isHidden = true
+            [Command.columnLeft, .columnRight, .deleteColumn].forEach { buttons[$0]?.isHidden = true }
         }
         for view in chromeViews { addSubview(view, positioned: .above, relativeTo: nil) }
     }
 
-    private func perform(_ command: TableEditBar.Command) {
+    @objc private func circleTapped(_ sender: TableCircleButton) {
+        guard let command = buttons.first(where: { $0.value === sender })?.key else { return }
+        perform(command)
+    }
+
+    func perform(_ command: Command) {
         commitPendingEdit()
         switch command {
         case .rowAbove: tableDelegate?.pagesTable(self, insertRow: .above)
@@ -364,7 +404,7 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
     func editChromeHit(_ point: NSPoint) -> NSView? {
         guard isEditingChromeVisible else { return nil }
         let local = convert(point, from: superview)
-        if !editBar.isHidden, editBar.frame.contains(local) { return editBar.hitTest(local) }
+        for button in buttons.values where !button.isHidden && button.frame.contains(local) { return button }
         for grip in [rowGrip, columnGrip] where !grip.isHidden && grip.frame.contains(local) { return grip }
         return nil
     }
@@ -386,14 +426,62 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
         dragColumn(.ended, CGPoint(x: x, y: start.y))
     }
 
-    /// The canvas hit-tests the bar's "Insert Row Below" button (it hangs below the table).
+    /// The canvas hit-tests the "+ row below" button (it hangs outside the table frame).
     func testBarButtonHit(in canvas: NSView) -> Bool {
-        guard let button = editBar.buttons[.rowBelow] else { return false }
+        guard let button = buttons[.rowBelow], !button.isHidden else { return false }
         let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: canvas)
         return canvas.hitTest(point) === button
     }
 
     var testGripsVisible: (row: Bool, column: Bool) { (!rowGrip.isHidden, !columnGrip.isHidden) }
+
+    /// Visible controls and whether each + / − sits where it acts (row edges, column edges, beside grips).
+    var testControlLayout: (visible: Set<String>, placedOnEdges: Bool) {
+        layoutSubtreeIfNeeded()
+        var visible = Set<String>()
+        for (command, button) in buttons where !button.isHidden { visible.insert("\(command)") }
+        var ok = true
+        if let y = primaryY(for: selectedRow) {
+            if let below = buttons[.rowBelow], !below.isHidden { ok = ok && abs(below.frame.midY - (y + Self.rowHeight)) < 1 }
+            if let above = buttons[.rowAbove], !above.isHidden { ok = ok && abs(above.frame.midY - y) < 1 }
+            if let delete = buttons[.deleteRow], !delete.isHidden { ok = ok && delete.frame.maxX <= rowGrip.frame.minX && abs(delete.frame.midY - rowGrip.frame.midY) < 1 }
+        }
+        if selectedColumn < columnWidths.count {
+            let x = columnX(selectedColumn)
+            if let left = buttons[.columnLeft] { ok = ok && abs(left.frame.midX - x) < 1 }
+            if let right = buttons[.columnRight] { ok = ok && abs(right.frame.midX - (x + columnWidths[selectedColumn])) < 1 }
+            if let delete = buttons[.deleteColumn] { ok = ok && delete.frame.maxY <= columnGrip.frame.minY }
+        }
+        return (visible, ok)
+    }
+
+    /// What a mouse click does: the cell field just becomes first responder (no keystroke).
+    func testClickCell(row: Int, column: Int) {
+        layoutSubtreeIfNeeded()
+        for slice in slices {
+            if let field = slice.field(row: row, column: column) {
+                window?.makeFirstResponder(field)
+                return
+            }
+        }
+    }
+
+    var testSelectedCell: (row: Int, column: Int) { (selectedRow, selectedColumn) }
+
+    /// Row grip sits beside the selected row and the column grip above the selected column.
+    var testGripsFollowSelection: Bool {
+        layoutSubtreeIfNeeded()
+        guard isEditingChromeVisible else { return false }
+        var ok = true
+        if selectedRow >= 2, let y = primaryY(for: selectedRow) {
+            ok = ok && rowGrip.frame.midY > y && rowGrip.frame.midY < y + Self.rowHeight
+        }
+        if selectedColumn < columnWidths.count {
+            let x = columnX(selectedColumn)
+            ok = ok && columnGrip.frame.midX > x && columnGrip.frame.midX < x + columnWidths[selectedColumn]
+        }
+        return ok
+    }
 
     /// (shown text, bold?) of a cell field — rendered unless the cell is being edited.
     func testCellDisplay(row: Int, column: Int) -> (text: String, bold: Bool)? {
@@ -497,6 +585,26 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
         moveSelection(columnDelta: 0, rowDelta: 1)
     }
 
+    /// A cell became first responder (click, Tab, arrows, code). `controlTextDidBeginEditing` only
+    /// fires on the first keystroke, so selection, grips, bar and menu commands follow this instead.
+    func cellDidFocus(_ field: NSTextField) {
+        let row = field.tag / 1000
+        let column = field.tag % 1000
+        let changed = row != selectedRow || column != selectedColumn || !isEditingChromeVisible
+        selectedRow = row
+        selectedColumn = column
+        setEditingChrome(true)
+        layoutEditChrome()
+        if changed {
+            needsDisplay = true
+            tableDelegate?.pagesTableDidChangeFocus(self)
+        }
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        (obj.object as? MarkdownCellField)?.restyleEditor()
+    }
+
     func controlTextDidBeginEditing(_ obj: Notification) {
         guard let field = obj.object as? NSTextField else { return }
         selectedRow = field.tag / 1000
@@ -534,7 +642,39 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
             moveSelection(columnDelta: 0, rowDelta: 1)
             return true
         }
-        return false
+        // Arrow keys: ↑ / ↓ always change row; ← / → leave the cell at the start / end of its text.
+        let caret = textView.selectedRange()
+        let length = (textView.string as NSString).length
+        switch commandSelector {
+        case #selector(moveUp(_:)):
+            return navigate(rowDelta: -1)
+        case #selector(moveDown(_:)):
+            return navigate(rowDelta: 1)
+        case #selector(moveLeft(_:)) where caret.length == 0 && caret.location == 0:
+            return navigate(columnDelta: -1)
+        case #selector(moveRight(_:)) where caret.length == 0 && caret.location >= length:
+            return navigate(columnDelta: 1)
+        default:
+            return false
+        }
+    }
+
+    /// Arrow navigation: clamped to the table (never inserts rows); the delimiter row is skipped.
+    @discardableResult
+    func navigate(columnDelta: Int = 0, rowDelta: Int = 0) -> Bool {
+        let rows = [0] + Array(2..<max(2, block.rows.count))
+        guard let index = rows.firstIndex(of: selectedRow) else { return false }
+        let targetRow = rows[min(max(0, index + rowDelta), rows.count - 1)]
+        let targetColumn = min(max(0, selectedColumn + columnDelta), max(0, block.columnCount - 1))
+        guard targetRow != selectedRow || targetColumn != selectedColumn else { return true }
+        commitCurrent()
+        focusCell(row: targetRow, column: targetColumn)
+        // Coming from the right, land at the end; otherwise at the start.
+        if let editor = window?.firstResponder as? NSTextView {
+            let end = (editor.string as NSString).length
+            editor.setSelectedRange(NSRange(location: columnDelta < 0 ? end : 0, length: 0))
+        }
+        return true
     }
 
     /// Stop editing the focused cell without committing (its text was committed already).
@@ -711,6 +851,10 @@ private final class TableSliceView: NSView {
                 let ink = Theme.bodyColor(darkPaper: darkPaper)
                 let dark = darkPaper
                 field.render = { CellMarkdown.attributed($0, font: cellFont, color: ink, darkPaper: dark) }
+                field.allowsEditingTextAttributes = true   // the field editor shows the styled source
+                field.styleEditor = { CellMarkdown.styleSource($0, font: cellFont, color: ink, darkPaper: dark) }
+                field.baseTypingAttributes = [.font: cellFont, .foregroundColor: ink]
+                field.onFocus = { [weak parent] cell in parent?.cellDidFocus(cell) }
                 field.raw = value.trimmingCharacters(in: .whitespaces)
                 field.placeholderString = display == 0 ? "Header" : ""
                 addSubview(field)

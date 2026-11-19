@@ -89,19 +89,25 @@ final class MarkdownTextView: NSTextView {
         window?.undoManager ?? super.undoManager
     }
 
-    func applyStyles() {
+    /// Restyles the document, or only `range` (grown to whole lines / blocks) when given.
+    func applyStyles(range: NSRange? = nil) {
         guard let storage = textStorage, !isApplyingStyles else { return }
         isApplyingStyles = true
         let selection = selectedRange()
         let um = window?.undoManager ?? undoManager
         um?.disableUndoRegistration()
+        // One edit transaction: otherwise every attribute call is processed (and invalidates
+        // layout) on its own — hundreds of times per restyle.
+        storage.beginEditing()
         StyleEngine.apply(
             to: storage,
             mode: mode,
             settings: editorSettings,
             selection: selection,
-            extraBlockSpacing: extraBlockSpacing
+            extraBlockSpacing: extraBlockSpacing,
+            limit: range
         )
+        storage.endEditing()
         um?.enableUndoRegistration()
         typingAttributes = [
             .font: Theme.bodyFont(editorSettings),
@@ -110,18 +116,53 @@ final class MarkdownTextView: NSTextView {
         isApplyingStyles = false
     }
 
+    private enum PendingRestyle { case range(NSRange), full }
+    private var pendingRestyle: PendingRestyle?
+
+    /// Length of the last range `applyEdit` replaced (tests: edits must stay local).
+    private(set) var lastEditLength = 0
+
+    /// Applies an edit as the *smallest* replacement (common prefix / suffix kept), so formatting
+    /// and table edits invalidate only the changed lines — replacing the whole text re-laid out the
+    /// entire document, re-rendered every thumbnail and made the view jump for a while.
     func applyEdit(_ result: EditResult) {
-        let old = string
-        let full = NSRange(location: 0, length: (old as NSString).length)
-        guard old != result.text else {
+        let old = string as NSString
+        let new = result.text as NSString
+        guard (string as String) != result.text else {
             setSelectedRange(result.selected)
             return
         }
-        if shouldChangeText(in: full, replacementString: result.text) {
-            textStorage?.replaceCharacters(in: full, with: result.text)
+        let range = Self.changedRange(old: old, new: new)
+        let replacement = new.substring(with: NSRange(location: range.location, length: new.length - (old.length - range.length)))
+        lastEditLength = range.length + (replacement as NSString).length
+        if shouldChangeText(in: range, replacementString: replacement) {
+            textStorage?.replaceCharacters(in: range, with: replacement)
+            // Style the changed lines right now, before the window can draw a frame with raw
+            // `**` showing; the pending asynchronous restyle is no longer needed.
+            pendingRestyle = nil
+            styleGeneration += 1
+            if forceFullRestyle {
+                forceFullRestyle = false
+                applyStyles()
+            } else {
+                applyStyles(range: NSRange(location: range.location, length: (replacement as NSString).length))
+            }
             didChangeText()
         }
         setSelectedRange(result.selected)
+    }
+
+    /// Range of `old` that differs from `new` (UTF-16), after stripping the common prefix and suffix.
+    static func changedRange(old: NSString, new: NSString) -> NSRange {
+        let shorter = min(old.length, new.length)
+        var prefix = 0
+        while prefix < shorter, old.character(at: prefix) == new.character(at: prefix) { prefix += 1 }
+        var suffix = 0
+        while suffix < shorter - prefix,
+              old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) { suffix += 1 }
+        // Never split a surrogate pair.
+        if prefix > 0, prefix < old.length, UTF16.isTrailSurrogate(old.character(at: prefix)) { prefix -= 1 }
+        return NSRange(location: prefix, length: old.length - prefix - suffix)
     }
 
     func setDocumentText(_ text: String) {
@@ -175,9 +216,20 @@ final class MarkdownTextView: NSTextView {
         super.insertText(insertString, replacementRange: replacementRange)
     }
 
+    /// Characters that open or close blocks reaching beyond the edited lines (fences, tables).
+    private static let structural = CharacterSet(charactersIn: "`~|$")
+    /// The next restyle must cover the whole document (block structure may have changed elsewhere).
+    private var forceFullRestyle = false
+
     override func shouldChangeText(in affectedCharRange: NSRange, replacementString: String?) -> Bool {
         let allowed = super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
         if allowed, !isApplyingStyles {
+            let ns = string as NSString
+            let removed = NSMaxRange(affectedCharRange) <= ns.length ? ns.substring(with: affectedCharRange) : ""
+            if removed.rangeOfCharacter(from: Self.structural) != nil
+                || (replacementString ?? "").rangeOfCharacter(from: Self.structural) != nil {
+                forceFullRestyle = true
+            }
             markdownDelegate?.markdownTextViewWillChange(self)
         }
         return allowed
@@ -211,12 +263,13 @@ final class MarkdownTextView: NSTextView {
         (window?.undoManager ?? undoManager)?.redo()
     }
 
-    /// Rounded GitHub-style boxes behind inline code (one per line segment), in view coordinates.
+    /// Rounded GitHub-style boxes behind inline code (one per line segment), in view coordinates
+    /// (or relative to `origin` — the text container's position — for PDF export).
     /// Works with TextKit 2 and with the TextKit 1 fallback AppKit switches to once `layoutManager`
     /// is touched.
-    func inlineCodeBoxRects(in area: NSRect? = nil) -> [CGRect] {
+    func inlineCodeBoxRects(in area: NSRect? = nil, origin containerOrigin: CGPoint? = nil) -> [CGRect] {
         guard let storage = textStorage, storage.length > 0 else { return [] }
-        let origin = textContainerOrigin
+        let origin = containerOrigin ?? textContainerOrigin
         var boxes: [CGRect] = []
         func add(_ rect: CGRect, font: NSFont) {
             guard rect.width > 1 else { return }
@@ -282,6 +335,64 @@ final class MarkdownTextView: NSTextView {
         }
     }
 
+    /// Where each hidden inline `$…$` formula is drawn (sitting on the line's baseline).
+    func inlineMathPlacements(origin containerOrigin: CGPoint? = nil) -> [(image: NSImage, rect: CGRect)] {
+        guard let storage = textStorage, storage.length > 0, mode == .wysiwyg else { return [] }
+        let origin = containerOrigin ?? textContainerOrigin
+        var placements: [(NSImage, CGRect)] = []
+        storage.enumerateAttribute(.markaInlineMath, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard let latex = value as? String, range.length > 0 else { return }
+            let rendered = MathRenderer.render(latex, fontSize: editorSettings.fontSize,
+                                               color: Theme.bodyColor(darkPaper: editorSettings.darkPaper), display: false)
+            let size = rendered.image.size
+            var x: CGFloat = 0, baseline: CGFloat = 0
+            if let lm = layoutManager, textLayoutManager == nil {
+                let glyph = lm.glyphIndexForCharacter(at: range.location)
+                let line = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                let location = lm.location(forGlyphAt: glyph)
+                x = line.minX + location.x
+                baseline = line.minY + location.y
+            } else if let first = segmentRects(for: NSRange(location: range.location, length: 1)).first {
+                x = first.minX
+                baseline = first.maxY - abs(Theme.bodyFont(editorSettings).descender)
+            } else {
+                return
+            }
+            placements.append((rendered.image, CGRect(x: origin.x + x, y: origin.y + baseline - (size.height - rendered.baseline), width: size.width, height: size.height)))
+        }
+        return placements
+    }
+
+    func drawInlineCodeBoxesForExport(origin: CGPoint) {
+        let radius = Theme.inlineCodeRadius
+        Theme.inlineCodeBox(darkPaper: editorSettings.darkPaper).setFill()
+        for box in inlineCodeBoxRects(origin: origin) {
+            NSBezierPath(roundedRect: box, xRadius: radius, yRadius: radius).fill()
+        }
+    }
+
+    func drawInlineMathForExport(origin: CGPoint) {
+        for placement in inlineMathPlacements(origin: origin) {
+            placement.image.draw(in: placement.rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        }
+    }
+
+    /// Inline extras drawn on top of the glyphs: GitHub code boxes and inline math. `origin` is the
+    /// text container's position (PDF export); nil draws in this view.
+    func drawInlineExtras(origin: CGPoint? = nil, in area: NSRect? = nil) {
+        if origin != nil {
+            let radius = Theme.inlineCodeRadius
+            Theme.inlineCodeBox(darkPaper: editorSettings.darkPaper).setFill()
+            for box in inlineCodeBoxRects(origin: origin) {
+                NSBezierPath(roundedRect: box, xRadius: radius, yRadius: radius).fill()
+            }
+        }
+        for placement in inlineMathPlacements(origin: origin) {
+            if let area, !placement.rect.intersects(area) { continue }
+            placement.image.draw(in: placement.rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        }
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         if let paged = superview as? PagedEditorView, paged.pageCount > 0 {
             NSGraphicsContext.saveGraphicsState()
@@ -298,11 +409,13 @@ final class MarkdownTextView: NSTextView {
             clip.addClip()
             drawInlineCodeBoxes(in: dirtyRect)
             super.draw(dirtyRect)
+            drawInlineExtras(in: dirtyRect)
             NSGraphicsContext.restoreGraphicsState()
             return
         }
         drawInlineCodeBoxes(in: dirtyRect)
         super.draw(dirtyRect)
+        drawInlineExtras(in: dirtyRect)
     }
 
     override func becomeFirstResponder() -> Bool {
@@ -316,8 +429,31 @@ final class MarkdownTextView: NSTextView {
     override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting stillSelectingFlag: Bool) {
         super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelectingFlag)
         if !stillSelectingFlag {
+            revealInlineMathIfNeeded()
             markdownDelegate?.markdownTextViewDidChangeSelection(self)
         }
+    }
+
+    /// Inline `$…$` the caret is in (its source is shown while editing it).
+    private var revealedMathGroup: NSRange?
+
+    /// Show the source of the inline formula the caret enters; hide the one it leaves. Restyles only
+    /// those lines (incremental), so the rest of the document never moves.
+    private func revealInlineMathIfNeeded() {
+        guard mode == .wysiwyg, !isApplyingStyles, let storage = textStorage, storage.length > 0 else { return }
+        let caret = selectedRange()
+        let group = MarkdownSyntax.spans(in: string).first { span in
+            span.kind == .inlineMath && span.role == .content
+                && caret.location >= span.group.location && caret.location <= NSMaxRange(span.group)
+        }?.group
+        guard group != revealedMathGroup else { return }
+        let previous = revealedMathGroup
+        revealedMathGroup = group
+        var dirty: NSRange?
+        for range in [previous, group].compactMap({ $0 }) where NSMaxRange(range) <= storage.length {
+            dirty = dirty.map { NSUnionRange($0, range) } ?? range
+        }
+        if let dirty { applyStyles(range: dirty) }
     }
 
     override func clicked(onLink link: Any, at charIndex: Int) {
@@ -539,11 +675,26 @@ final class MarkdownTextView: NSTextView {
 extension MarkdownTextView: @preconcurrency NSTextStorageDelegate {
     func textStorage(_ textStorage: NSTextStorage, didProcessEditing editedMask: NSTextStorageEditActions, range editedRange: NSRange, changeInLength delta: Int) {
         guard !isApplyingStyles, editedMask.contains(.editedCharacters) else { return }
+        // Accumulate what changed since the last restyle (in current coordinates); several edits
+        // before it runs fall back to a full restyle, which is always correct.
+        if forceFullRestyle {
+            forceFullRestyle = false
+            pendingRestyle = .full
+        } else if pendingRestyle == nil {
+            pendingRestyle = .range(editedRange)
+        } else if case .range = pendingRestyle {
+            pendingRestyle = .full
+        }
         styleGeneration += 1
         let gen = styleGeneration
         DispatchQueue.main.async { [weak self] in
             guard let self, self.styleGeneration == gen else { return }
-            self.applyStyles()
+            let pending = self.pendingRestyle
+            self.pendingRestyle = nil
+            switch pending {
+            case .range(let range)?: self.applyStyles(range: range)
+            default: self.applyStyles()
+            }
         }
     }
 }

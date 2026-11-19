@@ -159,15 +159,17 @@ func render(pixelSize: Int) -> NSBitmapImageRep {
     ctx.saveGState()
     ctx.setShadow(offset: CGSize(width: 0, height: -18 * px), blur: 42 * px, color: CGColor(gray: 0.1, alpha: 0.22))
     ctx.addPath(slab)
-    ctx.setFillColor(glassBottom.cg(0.35))
+    ctx.setFillColor(glassBottom.cg(1))
     ctx.fillPath()
     ctx.restoreGState()
 
-    // Clear glass body: faintly frosted, lighter at the top.
+    // Glass body, painted OPAQUE: macOS 26 only uses a flat .icns as the icon's own plate when it
+    // is a solid rounded square on the standard grid. A translucent slab is treated as
+    // non-conforming and placed onto a second, system-drawn plate ("two glasses").
     ctx.saveGState()
     ctx.addPath(slab)
     ctx.clip()
-    ctx.drawLinearGradient(gradient([glassTop.cg(0.42), glassBottom.cg(0.30)]), start: CGPoint(x: 512, y: body.minY), end: CGPoint(x: 512, y: body.maxY), options: [])
+    ctx.drawLinearGradient(gradient([glassTop.cg(1), glassBottom.cg(1)]), start: CGPoint(x: 512, y: body.minY), end: CGPoint(x: 512, y: body.maxY), options: [])
     // Soft caustic where light focuses through the slab.
     ctx.drawRadialGradient(gradient([CGColor(srgbRed: 1, green: 0.97, blue: 0.93, alpha: 0.45), CGColor(gray: 1, alpha: 0)]),
                            startCenter: CGPoint(x: 560, y: 820), startRadius: 0, endCenter: CGPoint(x: 560, y: 820), endRadius: 300, options: [])

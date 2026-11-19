@@ -166,7 +166,10 @@ enum PDFExporter {
             NSGraphicsContext.current?.cgContext.saveGState()
             NSBezierPath(rect: CGRect(x: geometry.margin, y: geometry.margin, width: geometry.contentSize.width, height: geometry.contentSize.height)).addClip()
             lm.drawBackground(forGlyphRange: lm.glyphRange(forBoundingRect: used, in: container), at: origin)
+            // Inline code boxes go behind the glyphs, inline math on top (both drawn by the text view).
+            canvas.textView.drawInlineCodeBoxesForExport(origin: origin)
             lm.drawGlyphs(forGlyphRange: lm.glyphRange(forBoundingRect: used, in: container), at: origin)
+            canvas.textView.drawInlineMathForExport(origin: origin)
             NSGraphicsContext.current?.cgContext.restoreGState()
         }
 

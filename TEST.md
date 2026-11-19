@@ -53,7 +53,7 @@ Download **`Marka-macos.zip`** from the same [releases page](https://github.com/
 - Compact headings and paragraphs; GitHub-style underline under Heading 1 and 2 (the rule is not a typeable line)
 - Preview-style chrome: translucent titlebar, sidebar button next to the window controls, thumbnail pane below the titlebar, rounded window tabs, light gray-blue selected page. Zoom is − / Auto / + magnifiers. Zoomed-out pages stay centered.
 - Settings (`⌘,`): default font and size (Times New Roman 10 pt), margins, page numbers, autosave, dark paper
-- Manual page break: `<!-- pagebreak -->`
+- Manual page break: `<!-- pagebreak -->`**
 - Export PDF (`⌘⇧E`) and print (`⌘P`) using the same pages
 - Share the `.md` file or a generated PDF
 - Autosave, find & replace, zoom, light/dark UI (paper stays white unless you enable dark paper)
@@ -62,15 +62,88 @@ The saved file is ordinary UTF-8 GitHub-Flavored Markdown. Opening and saving wi
 
 ## Table
 
-| Action               |     |     | Shortcut                                                    |
-| -------------------- | --- | --- | ----------------------------------------------------------- |
-| Undo / Redo          |     |     | `⌘Z` or `Ctrl+Z` / `⌘⇧Z`                                    |
-| Find                 |     |     | `⌘F`                                                        |
-| Source mode          |     |     | `⌘/`                                                        |
-| Settings             |     |     | `⌘,`                                                        |
-| Bold / Italic / Link |     |     | `⌘B` / **`⌘I`** / `⌘K`                                      |
-| Sidebar              |     |     | `⌘⌥S`                                                       |
-| Export PDF           |     |     | `⌘⇧E`                                                       |
-| Print                |     |     | `⌘P`                                                        |
-| Zoom                 |     |     | **Auto** / *Wide* (default Auto), `⌘+` `⌘-` `⌘0`            |
-| Table                |     |     | Format → Table (row above/below, column left/right, delete) |
+
+
+| Action               | Shortcut                                                    |
+| -------------------- | ----------------------------------------------------------- |
+| Undo / Redo          | `⌘Z` or `Ctrl+Z` / `⌘⇧Z`                                    |
+| Find                 | `⌘F`                                                        |
+| Source mode          | `⌘/`                                                        |
+| Settings             | `⌘,`                                                        |
+| Bold / Italic / Link | `⌘B` / **`⌘I`** / `⌘K`                                      |
+| Sidebar              | `⌘⌥S`                                                       |
+| Export PDF           | `⌘⇧E`                                                       |
+| Print                | `⌘P`                                                        |
+| Zoom                 | **Auto** / *Wide* (default Auto), `⌘+` `⌘-` `⌘0`            |
+| Table                | Format → Table (row above/below, column left/right, delete) |
+
+## Math
+
+Inline math sits in the text: Euler's identity $e^{i\pi} + 1 = 0$, the area of a circle $A = \pi r^2$, and $\alpha + \beta \le \gamma$. Prices like $5 and $10 stay plain text.
+
+The quadratic formula:
+
+$$
+x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}
+$$
+
+A sum, an integral and a limit:
+
+```math
+\sum_{k=1}^{n} k = \frac{n(n+1)}{2}, \qquad \int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}, \qquad \lim_{x \to 0} \frac{\sin x}{x} = 1
+```
+
+A matrix and a piecewise function:
+
+$$
+A = \begin{pmatrix} a & b \\ c & d \end{pmatrix}, \qquad |x| = \begin{cases} x & \text{if } x \ge 0 \\ -x & \text{otherwise} \end{cases}
+$$
+
+Alphabets and accents: $\mathbb{R}^n$, $\mathcal{F}$, $\mathbf{v}$, $\hat{x}$, $\vec{v}$, $\overline{z}$.
+
+
+## Diagrams
+
+A flowchart:
+```mermaid
+graph TD
+  A[Open document] --> B{Edited?}
+  B -->|Yes| C[Save changed lines]
+  B -->|No| D[Keep bytes identical]
+  C --> E((Done))
+  D --> E
+  E -.->|next edit| B
+```
+
+A left-to-right flowchart with shapes:
+
+```mermaid
+flowchart LR
+  md[(Markdown file)] --> parse[[Parser]] --> style(Style engine) --> pages{{A4 pages}}
+  pages ==> pdf>PDF export]
+```
+
+A sequence diagram:
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor User
+  participant M as Marka
+  participant F as File
+  User->>M: Press ⌘S
+  M->>F: Write changed lines
+  F-->>M: OK
+  Note right of M: Unedited lines stay byte-identical
+  M-->>User: Saved
+```
+
+A pie chart:
+
+```mermaid
+pie title Time spent editing
+  "Writing" : 55
+  "Formatting" : 20
+  "Tables" : 15
+  "Diagrams" : 10
+```

@@ -72,6 +72,37 @@ public final class EditorWindowHarness {
     public var copyButtonSize: CGSize { controller.testCopyButtonSize }
     public func foregroundHex(at location: Int) -> String? { controller.testForegroundHex(at: location) }
     public var inlineCodeBoxes: [CGRect] { controller.testInlineCodeBoxes }
+    public var renderedFrames: [CGRect] { controller.testRenderedFrames }
+    public func pageSnapshot(_ page: Int, height: CGFloat, to path: String) { controller.testPageSnapshot(page, height: height, to: URL(fileURLWithPath: path)) }
+    public func pdfPageSnapshot(_ page: Int, to path: String) { controller.testPDFPageSnapshot(page, to: URL(fileURLWithPath: path)) }
+    public func canvasY(of location: Int) -> CGFloat { controller.testCanvasY(of: location) }
+    public func pageContentRect(containing y: CGFloat) -> CGRect? { controller.testPageContentRect(containing: y) }
+    public func editRenderedBlock(_ index: Int, newSource: String) { controller.testEditRenderedBlock(index, newSource: newSource); pump(0.3) }
+    public var inlineMathPlacements: [CGRect] { controller.testInlineMathPlacements }
+    public var pdfPageCount: Int { controller.testPDFPageCount }
+    public var visibleTopY: CGFloat { controller.testVisibleTopY }
+    public func scrollVisibleTop(to y: CGFloat) { controller.testScrollVisibleTop(to: y); pump(0.05) }
+    public var tableScreenTop: CGFloat? { controller.testTableScreenTop }
+    public func reapplyZoom() { controller.applyZoomFromSettings(persist: false); pump(0.1) }
+    public func setZoom(manual value: CGFloat?) {
+        var s = SettingsStore.shared.current
+        if let value { s.zoomMode = "manual"; s.zoomFactor = value } else { s.zoomMode = "auto" }
+        SettingsStore.shared.current = s
+        pump(0.15)
+    }
+    /// A second document window, as File → New / Open makes it, and its frame.
+    public static func newWindowFrame() -> NSRect {
+        let controller = DocumentWindowController()
+        let frame = controller.window?.frame ?? .zero
+        controller.window?.isReleasedWhenClosed = false
+        controller.close()
+        return frame
+    }
+    public func moveWindow(to frame: NSRect) {
+        controller.window?.setFrame(frame, display: false)
+        pump(0.1)
+    }
+    public static func clearSavedWindowFrame() { DocumentWindowController.forgetSavedFrame() }
     public func pdfLinks(documentDirectory: URL? = nil) -> [(page: Int, url: String, rect: CGRect)] {
         controller.testPDFLinks(documentDirectory: documentDirectory)
     }
@@ -99,6 +130,8 @@ public final class EditorWindowHarness {
     public var findHighlightCount: Int { controller.testFindHighlightCount }
     public var editAnchor: CGFloat? { controller.testEditAnchor }
     public var findButtonIsViewBased: Bool { controller.testFindButtonIsViewBased }
+    public var findLayoutAligned: Bool { controller.testFindLayoutAligned }
+    public func findSnapshot(to path: String) { controller.testFindSnapshot(to: URL(fileURLWithPath: path)) }
     public func fontTraits(at location: Int) -> (bold: Bool, italic: Bool, mono: Bool) { controller.testFontTraits(at: location) }
     public func renderedLuminance(atTextViewPoint point: NSPoint) -> CGFloat? { controller.testRenderedLuminance(atTextViewPoint: point) }
     public var caretScreenOffset: CGFloat { controller.testCaretScreenOffset }
@@ -194,6 +227,15 @@ public final class EditorWindowHarness {
     public var format: MarkdownEditing.FormatState { controller.testFormat }
     public var headingPopupIndex: Int { controller.testHeadingPopupIndex }
     public var boldToolbarOn: Bool { controller.testBoldToolbarOn }
+    public var boldEnabled: Bool { controller.testBoldEnabled }
+    public var lastEditLength: Int { controller.testLastEditLength }
+    public func measureRestyle() -> Double { controller.testMeasureRestyle() }
+    public var styleSignature: String { controller.testStyleSignature }
+    public func measureColdParse() -> Double { controller.testMeasureColdParse() }
+    public func measureRelayout() -> Double { controller.testMeasureRelayout() }
+    public func fullRestyle() { controller.testFullRestyle(); pump(0.05) }
+    public func boldMarkersHiddenImmediately(at range: NSRange) -> (hidden: Bool, ms: Double) { controller.testBoldMarkersHiddenImmediately(at: range) }
+    public var lastContentPage: Int { controller.testLastContentPage }
     public var italicToolbarOn: Bool { controller.testItalicToolbarOn }
     public var listToolbarOn: Bool { controller.testListToolbarOn }
     public var codeToolbarOn: Bool { controller.testCodeToolbarOn }
@@ -224,11 +266,28 @@ public final class EditorWindowHarness {
     public var tableHasOnlyGitHubGrid: Bool { controller.testTableHasOnlyGitHubGrid }
     public var tableEditChromeVisible: Bool { controller.testTableEditChromeVisible }
     public func tableCellDisplay(row: Int, column: Int) -> (text: String, bold: Bool)? { controller.testTableCellDisplay(row: row, column: column) }
+    public func clickTableCell(row: Int, column: Int) { controller.testClickTableCell(row: row, column: column); pump(0.1) }
+    public var selectedTableCell: (row: Int, column: Int)? { controller.testSelectedTableCell }
+    public var tableGripsFollowSelection: Bool { controller.testTableGripsFollowSelection }
+    /// "up", "down", "left", "right".
+    public func cellArrow(_ direction: String) {
+        let map: [String: Selector] = [
+            "up": #selector(NSResponder.moveUp(_:)), "down": #selector(NSResponder.moveDown(_:)),
+            "left": #selector(NSResponder.moveLeft(_:)), "right": #selector(NSResponder.moveRight(_:))
+        ]
+        if let selector = map[direction] { controller.testCellKey(selector) }
+        pump(0.15)
+    }
+    public var cellEditorState: (text: String, markerHidden: Bool, contentBold: Bool)? { controller.testCellEditorState }
+    public func typeInCell(_ text: String, at location: Int) { controller.testTypeInCell(text, at: location); pump(0.1) }
+    public func selectInCell(_ range: NSRange) { controller.testSelectInCell(range); pump(0.05) }
     public var tableGripsVisible: (row: Bool, column: Bool) { controller.testTableGripsVisible }
     public var tableBarButtonHit: Bool { controller.testTableBarButtonHit }
+    public var tableControlLayout: (visible: Set<String>, placedOnEdges: Bool)? { controller.testTableControlLayout }
+    public func tableSnapshot(to path: String) { controller.testTableSnapshot(to: URL(fileURLWithPath: path)) }
     /// "rowAbove", "rowBelow", "columnLeft", "columnRight", "deleteRow", "deleteColumn".
     public func tableBar(_ command: String) {
-        let map: [String: TableEditBar.Command] = [
+        let map: [String: PagesTableView.Command] = [
             "rowAbove": .rowAbove, "rowBelow": .rowBelow, "columnLeft": .columnLeft,
             "columnRight": .columnRight, "deleteRow": .deleteRow, "deleteColumn": .deleteColumn
         ]
@@ -384,5 +443,49 @@ public final class EditorWindowHarness {
             RunLoop.current.run(mode: .default, before: until)
         }
         controller.window?.layoutIfNeeded()
+    }
+
+    /// Renders formulas (one per row) to a PNG sheet — visual checks of the math typesetting.
+    public static func renderMathSheet(_ formulas: [String], to path: String, display: Bool = true) -> [Bool] {
+        let rendered = formulas.map { MathRenderer.render($0, fontSize: 22, color: .black, display: display) }
+        let width = (rendered.map(\.image.size.width).max() ?? 100) + 40
+        let height = rendered.reduce(CGFloat(20)) { $0 + $1.image.size.height + 18 }
+        let sheet = NSImage(size: NSSize(width: width, height: height), flipped: true) { _ in
+            NSColor.white.setFill()
+            NSRect(x: 0, y: 0, width: width, height: height).fill()
+            var y: CGFloat = 10
+            for r in rendered {
+                r.image.draw(in: NSRect(x: 20, y: y, width: r.image.size.width, height: r.image.size.height))
+                NSColor(calibratedRed: 1, green: 0.3, blue: 0.3, alpha: 0.35).setFill()
+                NSRect(x: 12, y: y + r.image.size.height - r.baseline, width: 5, height: 1).fill()   // baseline tick
+                y += r.image.size.height + 18
+            }
+            return true
+        }
+        if let tiff = sheet.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff), let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
+        }
+        return rendered.map { !$0.hasErrors && $0.image.size.width > 4 }
+    }
+
+    /// Renders Mermaid sources (stacked) to a PNG sheet — visual checks of the diagrams.
+    public static func renderMermaidSheet(_ sources: [String], to path: String, dark: Bool = false) -> [CGSize] {
+        let images = sources.map { MermaidRenderer.render($0, fontSize: 13, dark: dark) }
+        let width = (images.map(\.size.width).max() ?? 100) + 40
+        let height = images.reduce(CGFloat(20)) { $0 + $1.size.height + 30 }
+        let sheet = NSImage(size: NSSize(width: width, height: height), flipped: true) { _ in
+            (dark ? NSColor(white: 0.12, alpha: 1) : NSColor.white).setFill()
+            NSRect(x: 0, y: 0, width: width, height: height).fill()
+            var y: CGFloat = 15
+            for image in images {
+                image.draw(in: NSRect(x: 20, y: y, width: image.size.width, height: image.size.height))
+                y += image.size.height + 30
+            }
+            return true
+        }
+        if let tiff = sheet.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff), let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
+        }
+        return images.map(\.size)
     }
 }

@@ -55,9 +55,22 @@ enum MarkaUITests {
             SettingsStore.shared.current = saved
         }
 
+        // Window position: remembered between windows/launches, never the bottom-left corner.
+        EditorWindowHarness.clearSavedWindowFrame()
+        let fresh = EditorWindowHarness.newWindowFrame()
+        if let screen = NSScreen.main?.visibleFrame {
+            expect(abs(fresh.midX - screen.midX) < 2 && fresh.minY > screen.minY + 1, "first window is centred, not in the bottom-left corner, got \(fresh)")
+            let placed = NSRect(x: screen.minX + 120, y: screen.minY + 90, width: 900, height: 640)
+            harness.moveWindow(to: placed)
+            let next = EditorWindowHarness.newWindowFrame()
+            expect(next.size == placed.size && abs(next.minX - placed.minX) < 40 && abs(next.maxY - placed.maxY) < 40, "a new window reopens where the last one was, got \(next) vs \(placed)")
+        }
+        harness.moveWindow(to: NSRect(x: -4800, y: -4800, width: 1100, height: 760))
+        EditorWindowHarness.clearSavedWindowFrame()
+
         expect(harness.zoomMode == "auto", "default zoom is Auto")
         expect(harness.zoomAutoOn, "Auto is checked in the zoom menu in Auto mode")
-        expect(harness.zoomTitle == "Auto %", "zoom combo shows Auto % while Auto is selected, got \(harness.zoomTitle)")
+        expect(harness.zoomTitle == "Auto", "zoom combo shows just Auto while Auto is selected, got \(harness.zoomTitle)")
         expect(harness.zoomMenuTitles.count == 11, "zoom menu: 9 presets, separator, Auto — got \(harness.zoomMenuTitles)")
         expect(harness.zoomMenuTitles.last == "Auto" && !harness.zoomMenuTitles.contains("Wide"), "one Auto entry closes the menu")
         harness.chooseZoom(Self_percent(1.5))
@@ -70,7 +83,7 @@ enum MarkaUITests {
         expect(harness.zoomTitle == Self_percent(2.0), "title updates after ⌘+, got \(harness.zoomTitle)")
         harness.chooseZoom("Auto")
         expect(harness.zoomMode == "auto" && harness.zoomAutoOn, "Auto returns to auto zoom")
-        expect(harness.zoomTitle == "Auto %", "title is Auto % again in Auto")
+        expect(harness.zoomTitle == "Auto", "title is Auto again in Auto")
 
         expect(harness.shareToolbarItemIsSystem, "Share uses the system share toolbar item (anchored under the button)")
         expect(harness.shareMenuItemIsSystem, "File → Share is the standard system Share menu item")
@@ -208,10 +221,99 @@ enum MarkaUITests {
         expect(harness.foregroundHex(at: plainLet) != "CF222E", "a fence without a language is not highlighted")
         expect(harness.foregroundHex(at: hns.range(of: "Intro").location) != "CF222E", "body text keeps its colour")
 
+        // Math typesetting: every formula of the supported subset renders without errors.
+        let formulas = [
+            "E = mc^2",
+            "x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}",
+            "\\sum_{k=1}^{n} k^2 = \\frac{n(n+1)(2n+1)}{6}",
+            "\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}",
+            "\\left( \\frac{a}{b} \\right)^2 \\leq \\alpha + \\beta_i",
+            "\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix} \\cdot \\vec{v} = \\begin{bmatrix} a \\\\ b \\end{bmatrix}",
+            "f(x) = \\begin{cases} x^2 & x \\geq 0 \\\\ -x & \\text{otherwise} \\end{cases}",
+            "\\lim_{n \\to \\infty} \\left(1 + \\frac{1}{n}\\right)^n = e",
+            "\\mathbb{R}^n, \\mathcal{L}, \\mathbf{F} = m\\mathbf{a}, \\sin\\theta, \\sqrt[3]{x}, \\hat{x}, \\overline{AB}",
+            "\\begin{aligned} a &= b + c \\\\ &= d \\end{aligned}"
+        ]
+        let mathPath = ProcessInfo.processInfo.environment["MARKA_MATH_SHEET"] ?? FileManager.default.temporaryDirectory.appendingPathComponent("marka-math.png").path
+        let mathOK = EditorWindowHarness.renderMathSheet(formulas, to: mathPath)
+        if let probe = ProcessInfo.processInfo.environment["MARKA_MATH_PROBE"] {
+            _ = EditorWindowHarness.renderMathSheet(["\\int_0^\\infty e^{-x^2}\\,dx", "e^{-x^2}", "a e b"], to: probe)
+        }
+        expect(mathOK.allSatisfy { $0 }, "every supported formula renders without errors, results \(mathOK)")
+        expect(EditorWindowHarness.renderMathSheet(["\\unknowncommand x"], to: mathPath + ".err.png") == [false], "unknown commands are reported (shown in red)")
+
+        // Mermaid diagrams render natively.
+        let diagrams = [
+            "flowchart TD\n  A[Open file] --> B{Is it Markdown?}\n  B -->|yes| C(Edit in Marka)\n  B -->|no| D[Open with system]\n  C --> E((Save))\n  E -.-> A\n  C ==> F[(Assets)]",
+            "graph LR\n  Write --> Review --> Publish\n  Review -- changes --> Write",
+            "sequenceDiagram\n  actor U as User\n  participant M as Marka\n  participant F as File\n  U->>M: Type text\n  M->>F: Autosave\n  F-->>M: Saved\n  Note over M,F: identity save keeps bytes\n  M->>M: Restyle\n  M-->>U: Updated page",
+            "pie title Time spent\n  \"Writing\" : 55\n  \"Editing\" : 25\n  \"Formatting\" : 12\n  \"Other\" : 8",
+            "gantt\n  title Not drawn"
+        ]
+        let mermaidPath = ProcessInfo.processInfo.environment["MARKA_MERMAID_SHEET"] ?? FileManager.default.temporaryDirectory.appendingPathComponent("marka-mermaid.png").path
+        let sizes = EditorWindowHarness.renderMermaidSheet(diagrams, to: mermaidPath)
+        expect(sizes.allSatisfy { $0.width > 60 && $0.height > 30 }, "every diagram renders at a real size, got \(sizes)")
+        if let dark = ProcessInfo.processInfo.environment["MARKA_MERMAID_DARK"] { _ = EditorWindowHarness.renderMermaidSheet(diagrams, to: dark, dark: true) }
+
+        if let dir = ProcessInfo.processInfo.environment["MARKA_TESTMD_SNAPSHOT_DIR"],
+           let sample = try? String(contentsOfFile: "TEST.md", encoding: .utf8) {
+            harness.loadMarkdown(sample)
+            for page in 0..<harness.pageCount { harness.pageSnapshot(page, height: 2000, to: dir + "/testmd-\(page).png") }
+        }
+        // Math and Mermaid in the document: drawn over hidden source, edited in a popover.
+        let renderedDoc = "Intro with $E=mc^2$ inline.\n\n```math\n\\frac{a}{b}\n```\n\n$$\n\\sum_{k=1}^{n} k\n$$\n\n```mermaid\ngraph TD\n  A[Start] --> B[End]\n```\n\nAfter the diagrams.\n"
+        harness.loadMarkdown(renderedDoc)
+        let rns = renderedDoc as NSString
+        if let dir = ProcessInfo.processInfo.environment["MARKA_RENDER_SNAPSHOT_DIR"] {
+            harness.pageSnapshot(0, height: 520, to: dir + "/page.png")
+            harness.pdfPageSnapshot(0, to: dir + "/pdf.png")
+        }
+        let frames = harness.renderedFrames
+        expect(frames.count == 3, "```math, $$ and ```mermaid are drawn, got \(frames.count)")
+        expect(harness.codeHeaderCount == 0, "drawn blocks get no code copy chips")
+        for name in ["\\frac{a}{b}", "\\sum_{k=1}^{n} k", "A[Start] --> B[End]"] {
+            let leaked = harness.visibleSourceCharacters(in: rns.range(of: name))
+            expect(leaked.isEmpty, "the source of \(name) is hidden in WYSIWYG, visible: \(leaked.joined())")
+        }
+        let afterY = harness.canvasY(of: rns.range(of: "After the diagrams").location)
+        expect(frames.allSatisfy { $0.maxY <= afterY + 1 }, "text after the drawings starts below them (after \(afterY), frames \(frames))")
+        expect(zip(frames, frames.dropFirst()).allSatisfy { $0.maxY <= $1.minY + 0.5 }, "drawings never overlap each other")
+        let inlineMath = harness.inlineMathPlacements
+        expect(inlineMath.count == 1 && (inlineMath.first?.width ?? 0) > 20, "inline $E=mc^2$ is drawn in the line, got \(inlineMath)")
+        expect(harness.visibleSourceCharacters(in: rns.range(of: "$E=mc^2$")).isEmpty, "inline math source is hidden")
+        harness.select(NSRange(location: rns.range(of: "mc^2").location, length: 0))
+        harness.pump(0.1)
+        expect(!harness.visibleSourceCharacters(in: rns.range(of: "$E=mc^2$")).isEmpty, "with the caret inside, the formula's source shows for editing")
+        expect(harness.inlineMathPlacements.isEmpty, "…and the drawn formula steps aside")
+        harness.select(NSRange(location: 0, length: 0))
+        harness.pump(0.1)
+        expect(harness.inlineMathPlacements.count == 1, "leaving the formula draws it again")
+        harness.editRenderedBlock(0, newSource: "\\sqrt{2}")
+        expect(harness.markdown.contains("```math\n\\sqrt{2}\n```"), "the equation popover writes the new source between the fences, got \(harness.markdown)")
+        harness.undo()
+        expect(harness.markdown.contains("```math\n\\frac{a}{b}\n```"), "an equation edit is one undo step")
+        expect(harness.pdfPageCount == harness.pageCount, "PDF export includes the drawings on the same pages (\(harness.pdfPageCount) vs \(harness.pageCount))")
+        harness.setSourceMode(true)
+        expect(harness.renderedFrames.isEmpty && harness.inlineMathPlacements.isEmpty, "source mode shows the raw Markdown")
+        harness.setSourceMode(false)
+
+        // A drawing that would cross a page break moves to the next page.
+        let pushFiller = (1...40).map { "Filler line \($0) to reach the bottom of the page." }.joined(separator: "\n\n")
+        harness.loadMarkdown(pushFiller + "\n\n```mermaid\ngraph TD\n  A --> B\n  B --> C\n  C --> D\n  D --> E\n```\n\nTail.\n")
+        if let frame = harness.renderedFrames.first, let page = harness.pageContentRect(containing: frame.midY) {
+            expect(frame.minY >= page.minY - 1 && frame.maxY <= page.maxY + 1, "a diagram sits wholly inside one page's content area, frame \(frame) page \(page)")
+            let tailY = harness.canvasY(of: (harness.markdown as NSString).range(of: "Tail.").location)
+            expect(tailY >= frame.maxY - 1 && tailY - frame.maxY < 40, "text after a pushed diagram follows it directly (gap \(tailY - frame.maxY))")
+        } else {
+            expect(false, "the pushed diagram is drawn")
+        }
+
         // Search & replace popover.
         let findDoc = "Alpha beta alpha.\n\nGamma ALPHA alphabet.\n"
         harness.loadMarkdown(findDoc)
         expect(harness.findButtonIsViewBased, "search button anchors the popover under itself")
+        expect(harness.findLayoutAligned, "find popover: fields share edges and size, controls share edges and size, rows centred")
+        if let path = ProcessInfo.processInfo.environment["MARKA_FIND_SNAPSHOT"] { harness.findSnapshot(to: path) }
         expect(harness.find("alpha") == "1 of 4", "finds every alpha (case-insensitive), got \(harness.find("alpha"))")
         expect(harness.findHighlightCount == 4, "all matches are highlighted, got \(harness.findHighlightCount)")
         expect(harness.selectedRange == NSRange(location: 0, length: 5), "first match is selected")
@@ -264,6 +366,128 @@ enum MarkaUITests {
         harness.focusTableCell(row: 3, column: 0)
         expect(harness.markdown.contains("| **Bold**") || harness.markdown.contains("|**Bold**"), "leaving the cell keeps its Markdown in the file, got \(harness.markdown)")
         expect(harness.tableCellDisplay(row: 2, column: 0)?.text == "Bold", "the left cell is rendered again")
+
+        // No empty last page: pages follow the content, also when it shrinks.
+        harness.loadMarkdown("Hello\n\n\n")
+        expect(harness.pageCount == 1, "a short document is one page, got \(harness.pageCount)")
+        let fill = (1...140).map { "Line \($0) of text that fills the pages." }.joined(separator: "\n\n")
+        harness.loadMarkdown(fill + "\n\n\n\n")
+        expect(harness.pageCount == harness.lastContentPage + 1, "trailing blank lines add no page (pages \(harness.pageCount), content ends on \(harness.lastContentPage + 1))")
+        harness.select(NSRange(location: 0, length: (harness.markdown as NSString).length))
+        harness.typeAtCaret("Short again")
+        harness.pump(0.4)
+        expect(harness.pageCount == 1, "deleting content removes the now-empty pages, got \(harness.pageCount)")
+
+        // Bold / italic are instant: markers are hidden before the next frame, restyle is fast.
+        let richParagraph = "Some **bold**, *italic*, `code`, a [link](https://x.y) and ~~old~~ text in paragraph"
+        let perfDoc = (1...200).map { "\(richParagraph) \($0)." }.joined(separator: "\n\n")
+            + "\n\n```swift\nlet x = 1 // code\n```\n"
+        harness.loadMarkdown(perfDoc)
+        var restyles: [Double] = []
+        for _ in 0..<3 { restyles.append(harness.measureRestyle()) }
+        let restyleMs = restyles.sorted()[1]
+        print("PERF restyle of a 200-paragraph document: \(String(format: "%.1f", restyleMs)) ms")
+        print("PERF cold parse of a 200-paragraph document: \(String(format: "%.1f", harness.measureColdParse())) ms")
+        print("PERF page relayout of a 200-paragraph document: \(String(format: "%.1f", harness.measureRelayout())) ms")
+        let target = (perfDoc as NSString).range(of: "paragraph 150")
+        let immediate = harness.boldMarkersHiddenImmediately(at: NSRange(location: target.location, length: 9))
+        print("PERF Bold action: \(String(format: "%.1f", immediate.ms)) ms, markers hidden before drawing: \(immediate.hidden)")
+        expect(immediate.hidden, "Bold hides its ** before the next frame (no visible asterisks)")
+        // Timings vary a lot with machine load (and debug builds); this is a regression guard only.
+        expect(immediate.ms < 250, "Bold stays well under a quarter second on a 200-paragraph document, took \(immediate.ms) ms")
+        _ = restyleMs
+
+        // Incremental restyles must produce exactly what a full restyle would.
+        let structureDoc = "# Title\n\nIntro paragraph with words.\n\nSetext\n\nMore text here.\n\n```swift\nlet a = 1\n```\n\nTail **bold** and `code`.\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nEnd.\n"
+        let edits: [(String, (EditorWindowHarness) -> Void)] = [
+            ("type in a paragraph", { h in h.select(NSRange(location: (h.markdown as NSString).range(of: "words").location, length: 0)); h.typeAtCaret("many ") }),
+            ("start inline code", { h in h.select(NSRange(location: (h.markdown as NSString).range(of: "More").location, length: 0)); h.typeAtCaret("`x` ") }),
+            ("setext underline", { h in h.select(NSRange(location: NSMaxRange((h.markdown as NSString).range(of: "Setext")), length: 0)); h.typeAtCaret("\n===") }),
+            ("remove a fence backtick", { h in let r = (h.markdown as NSString).range(of: "```\n\nTail"); h.select(NSRange(location: r.location, length: 1)); h.typeAtCaret("") }),
+            ("bold a word", { h in h.select((h.markdown as NSString).range(of: "Intro")); h.toggleBold() }),
+            ("unbold", { h in h.select((h.markdown as NSString).range(of: "bold")); h.toggleBold() }),
+            ("type in code", { h in h.select(NSRange(location: (h.markdown as NSString).range(of: "let a").location, length: 0)); h.typeAtCaret("var ") })
+        ]
+        for (name, apply) in edits {
+            harness.loadMarkdown(structureDoc)
+            apply(harness)
+            harness.pump(0.15)
+            let incremental = harness.styleSignature
+            harness.fullRestyle()
+            let full = harness.styleSignature
+            expect(incremental == full, "incremental restyle matches a full restyle after: \(name)")
+            if incremental != full {
+                let a = incremental.components(separatedBy: "\n"), b = full.components(separatedBy: "\n")
+                if let first = zip(a, b).first(where: { $0 != $1 }) { print("STYLE DIFF \(name): \(first.0)  vs  \(first.1)") }
+            }
+        }
+
+        // Bold / italic must not disturb scrolling.
+        let boldDoc = (1...80).map { "Paragraph \($0) with a word to format." }.joined(separator: "\n\n")
+        harness.loadMarkdown(boldDoc)
+        let wordAt = (boldDoc as NSString).range(of: "Paragraph 40 with a ")
+        harness.select(NSRange(location: NSMaxRange(wordAt), length: 4))
+        harness.scrollCaret(toScreenOffset: 300)
+        let boldBefore = harness.caretScreenOffset
+        harness.toggleBold()
+        var boldDrift: [Int] = []
+        for _ in 0..<12 { harness.pump(0.1); boldDrift.append(Int((harness.caretScreenOffset - boldBefore).rounded())) }
+        expect(boldDrift.allSatisfy { abs($0) <= 3 }, "Bold keeps the view still, drift over time \(boldDrift)")
+        expect(harness.markdown.contains("**word**"), "Bold applied")
+        expect(harness.lastEditLength <= 16, "Bold edits only the word, not the whole document (replaced \(harness.lastEditLength) chars)")
+        harness.toggleBold()
+        harness.pump(0.1)
+        harness.scrollVisibleTop(to: 200)       // the user scrolls away right after formatting
+        let scrolledTo = harness.visibleTopY
+        harness.pump(1.2)
+        expect(abs(harness.visibleTopY - scrolledTo) < 3, "a scroll right after formatting is not pulled back (\(scrolledTo) → \(harness.visibleTopY))")
+
+        // Formatting buttons work in table cells and in link labels.
+        harness.loadMarkdown("See [the docs](https://x.y) now.\n\n| A | B |\n| --- | --- |\n| plain | cell |\n")
+        let docsLabel = (harness.markdown as NSString).range(of: "docs")
+        harness.select(docsLabel)
+        expect(harness.boldEnabled, "Bold is available inside a link label")
+        harness.toggleBold()
+        expect(harness.markdown.contains("[the **docs**](https://x.y)"), "Bold wraps text inside a link label, got \(harness.markdown)")
+        harness.clickTableCell(row: 2, column: 0)
+        expect(harness.boldEnabled, "Bold is available while editing a table cell")
+        harness.selectInCell(NSRange(location: 0, length: 5))
+        harness.toggleBold()
+        harness.clickTableCell(row: 2, column: 1)
+        expect(harness.markdown.contains("**plain**"), "Bold in a table cell wraps the cell selection, got \(harness.markdown)")
+
+        // Opening a document starts at the top, and zoom changes keep the top line in place.
+        let longOpen = (1...90).map { "Paragraph \($0) of a long document." }.joined(separator: "\n\n")
+        harness.setZoom(manual: 1.0)
+        harness.loadMarkdown(longOpen)
+        harness.setZoom(manual: nil)          // Auto zoom kicks in after open, as it does at launch
+        expect(abs(harness.visibleTopY) < 2, "an opened document shows its top after Auto zoom, top y \(harness.visibleTopY)")
+        harness.scrollVisibleTop(to: 1500)
+        let anchoredTop = harness.visibleTopY
+        harness.setZoom(manual: 0.75)
+        expect(abs(harness.visibleTopY - anchoredTop) < 4, "zooming keeps the top line in place (\(anchoredTop) → \(harness.visibleTopY))")
+        harness.setZoom(manual: nil)
+        expect(abs(harness.visibleTopY - anchoredTop) < 4, "Auto refit keeps the top line in place (\(anchoredTop) → \(harness.visibleTopY))")
+
+        // Table edits keep the table where it is on screen and never select hidden source text.
+        let tableMiddle = (1...30).map { "Intro \($0)." }.joined(separator: "\n\n")
+            + "\n\n| A | B |\n| --- | --- |\n| a1 | b1 |\n| a2 | b2 |\n\n"
+            + (1...30).map { "Outro \($0)." }.joined(separator: "\n\n")
+        harness.loadMarkdown(tableMiddle)
+        harness.select(NSRange(location: 0, length: 0))   // the text cursor stays far above
+        harness.pump(0.2)
+        if let tableY = harness.tableScreenTop {
+            harness.scrollVisibleTop(to: harness.visibleTopY + tableY / harness.magnification - 200 / harness.magnification)
+        }
+        let tableTopBefore = harness.tableScreenTop ?? 0
+        harness.clickTableCell(row: 2, column: 0)
+        harness.tableBar("rowBelow")
+        let tableTopAfter = harness.tableScreenTop ?? 0
+        expect(abs(tableTopAfter - tableTopBefore) < 3, "inserting a row keeps the table in place (\(tableTopBefore) → \(tableTopAfter) pt)")
+        harness.typeInCell("x", at: 2)
+        harness.clickTableCell(row: 3, column: 1)
+        expect(abs((harness.tableScreenTop ?? 0) - tableTopBefore) < 3, "committing a cell keeps the table in place, moved \((harness.tableScreenTop ?? 0) - tableTopBefore) pt")
+        expect(harness.selectedRange.length == 0, "table edits never select hidden source text, got \(harness.selectedRange)")
 
         // Combined inline Markdown and GitHub-style inline code boxes.
         let inline = "See **[readme](README.md)** and **`Marka.dmg`** or *`Marka.dmg`* in `~/Library/Logs/Marka`.\n"
@@ -586,9 +810,14 @@ enum MarkaUITests {
         expect(harness.tableEditChromeVisible == false, "no table controls until the cursor is in the table")
         expect(harness.tableHasOnlyGitHubGrid, "idle table shows only the GitHub grid")
         harness.focusTableCell(row: 4, column: 0)
-        expect(harness.tableEditChromeVisible, "edit bar appears when the cursor is in a cell")
+        expect(harness.tableEditChromeVisible, "table controls appear when the cursor is in a cell")
         expect(harness.tableGripsVisible.row && harness.tableGripsVisible.column, "row and column grips appear next to the focused cell")
-        expect(harness.tableBarButtonHit, "edit bar buttons receive clicks (they hang below the table)")
+        expect(harness.tableBarButtonHit, "the + / − controls receive clicks (they hang outside the table)")
+        let bodyControls = harness.tableControlLayout
+        expect(bodyControls?.visible == ["rowAbove", "rowBelow", "deleteRow", "columnLeft", "columnRight", "deleteColumn"],
+               "a body cell shows + above/below, − row, + left/right, − column, got \(String(describing: bodyControls?.visible))")
+        expect(bodyControls?.placedOnEdges == true, "each + sits on the edge where the new row/column appears, − beside its grip")
+        if let path = ProcessInfo.processInfo.environment["MARKA_TABLE_SNAPSHOT"] { harness.tableSnapshot(to: path) }
         harness.dragTableRow(before: 2)
         func bodyOrder(_ md: String) -> [String] {
             md.components(separatedBy: "\n").compactMap { line in
@@ -621,9 +850,61 @@ enum MarkaUITests {
         harness.tableBar("deleteColumn")
         harness.tableBar("deleteRow")
         expect(harness.tableColumnCount == barCols + 1 && harness.tableRowCount == barRows + 1, "bar: Delete Column / Delete Row")
+        harness.clickTableCell(row: 0, column: 1)
+        let headerControls = harness.tableControlLayout
+        expect(headerControls?.visible == ["rowBelow", "columnLeft", "columnRight", "deleteColumn"],
+               "the header shows only + below for rows (it never moves or goes away), got \(String(describing: headerControls?.visible))")
         harness.select(NSRange(location: 1, length: 0))
         harness.pump(0.2)
         expect(harness.tableEditChromeVisible == false, "controls hide when the cursor leaves the table")
+
+        // Cell editing as a user does it: clicks (no keystroke), arrows, WYSIWYG source editing.
+        harness.loadMarkdown("""
+        Cells
+
+        | **Name** | Note |
+        | --- | --- |
+        | **Bold** | one |
+        | two | three |
+        | four | five |
+        """)
+        harness.clickTableCell(row: 3, column: 1)
+        expect(harness.selectedTableCell.map { $0.row == 3 && $0.column == 1 } == true, "a click selects the clicked cell, got \(String(describing: harness.selectedTableCell))")
+        expect(harness.tableEditChromeVisible, "a click shows the table controls")
+        expect(harness.tableGripsFollowSelection, "grips sit at the clicked cell")
+        harness.clickTableCell(row: 4, column: 0)
+        expect(harness.selectedTableCell.map { $0.row == 4 && $0.column == 0 } == true, "clicking another cell moves the selection, got \(String(describing: harness.selectedTableCell))")
+        expect(harness.tableGripsFollowSelection, "grips move with the clicked cell (no stale handles)")
+        harness.menuTable("rowAbove")
+        let afterInsert = harness.markdown.components(separatedBy: "\n")
+        let twoIndex = afterInsert.firstIndex { $0.contains("two") } ?? -1
+        let fourIndex = afterInsert.firstIndex { $0.contains("four") } ?? -1
+        expect(fourIndex - twoIndex == 2, "Insert Row Above acts on the clicked row (four), got \(afterInsert)")
+        harness.undo()
+        harness.clickTableCell(row: 2, column: 0)
+        harness.cellArrow("down")
+        expect(harness.selectedTableCell.map { $0.row == 3 && $0.column == 0 } == true, "↓ moves to the cell below, got \(String(describing: harness.selectedTableCell))")
+        harness.cellArrow("up")
+        harness.cellArrow("up")
+        expect(harness.selectedTableCell.map { $0.row == 0 } == true, "↑ from the first body row reaches the header (skips the delimiter), got \(String(describing: harness.selectedTableCell))")
+        harness.cellArrow("up")
+        expect(harness.selectedTableCell.map { $0.row == 0 } == true, "↑ stops at the header")
+        harness.cellArrow("down")
+        harness.cellArrow("right")
+        expect(harness.selectedTableCell.map { $0.row == 2 && $0.column == 0 } == true, "→ inside text moves the caret, not the cell")
+        harness.typeInCell("", at: 8)
+        harness.cellArrow("right")
+        expect(harness.selectedTableCell.map { $0.row == 2 && $0.column == 1 } == true, "→ at the end of the text moves to the next cell, got \(String(describing: harness.selectedTableCell))")
+        harness.cellArrow("left")
+        expect(harness.selectedTableCell.map { $0.column == 0 } == true, "← at the start moves to the previous cell")
+        harness.clickTableCell(row: 2, column: 0)
+        let editing = harness.cellEditorState
+        expect(editing?.text == "**Bold**", "the cell keeps its Markdown source while edited, got \(String(describing: editing))")
+        expect(editing?.markerHidden == true && editing?.contentBold == true, "editing is WYSIWYG: ** hidden, text bold, got \(String(describing: editing))")
+        harness.typeInCell("!", at: 6)
+        expect(harness.cellEditorState?.contentBold == true && harness.cellEditorState?.markerHidden == true, "styling holds while typing")
+        harness.clickTableCell(row: 3, column: 0)
+        expect(harness.markdown.contains("**Bold!**"), "typed text is saved inside the Markdown, got \(harness.markdown)")
 
         harness.loadMarkdown("""
         Keep

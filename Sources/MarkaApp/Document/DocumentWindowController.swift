@@ -89,6 +89,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         buildSplit(size: contentSize)
         window.contentViewController = splitController
         window.setContentSize(contentSize)
+        placeWindow(window)
         configureToolbar(window)
         _ = window.toolbar?.items
         applySettings()
@@ -96,7 +97,11 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged), name: SettingsStore.didChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(scrollChanged), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         NotificationCenter.default.addObserver(self, selector: #selector(windowResized), name: NSWindow.didResizeNotification, object: window)
+        NotificationCenter.default.addObserver(self, selector: #selector(saveWindowFrame), name: NSWindow.didMoveNotification, object: window)
+        NotificationCenter.default.addObserver(self, selector: #selector(saveWindowFrame), name: NSWindow.willCloseNotification, object: window)
         NotificationCenter.default.addObserver(self, selector: #selector(splitResized), name: NSSplitView.didResizeSubviewsNotification, object: splitController.splitView)
+        // Cell field editors are not the document text view: follow their selection too.
+        NotificationCenter.default.addObserver(self, selector: #selector(anyTextSelectionChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(liveMagnifyEnded), name: NSScrollView.didEndLiveMagnifyNotification, object: scroll)
         // Auto zoom follows the editor's own width (sidebar slide, divider drag, window resize).
         scroll.postsFrameChangedNotifications = true
@@ -152,6 +157,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         refreshStatus()
         refreshFormatToolbar()
         focusEditor()
+        scrollToTop()
     }
 
     func focusEditor() {
@@ -172,6 +178,12 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     }
 
     func markdownTextViewWillChange(_ view: MarkdownTextView) {
+        // Table edits anchor on the table itself (PagedEditorView.applyTableEdit); the text caret
+        // may be anywhere in the document and would scroll the view there.
+        if canvas.isApplyingTableEdit {
+            editAnchor = nil
+            return
+        }
         // A fresh edit takes a new anchor unless one from this same burst is still settling.
         let now = ProcessInfo.processInfo.systemUptime
         if editAnchor != nil, now - editAnchorTime < 1 { return }
@@ -493,7 +505,9 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         let item = NSToolbarItem(itemIdentifier: id)
         item.label = title
         item.paletteLabel = title
+        // Symbols newer than macOS 14 (SF Symbols 6) fall back to an older equivalent on Sonoma.
         item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+            ?? Self.sonomaFallbackSymbols[symbol].flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: title) }
         item.target = self
         item.action = action
         item.isBordered = true
@@ -521,12 +535,49 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         return item
     }
 
+    /// The field editor of the table cell being edited, if any.
+    private var activeCellEditor: NSTextView? {
+        guard let editor = window?.firstResponder as? NSTextView, editor !== textView,
+              (editor.delegate as AnyObject?) is MarkdownCellField else { return nil }
+        return editor
+    }
+
     func currentFormat() -> MarkdownEditing.FormatState {
-        MarkdownEditing.format(at: textView.selectedRange(), in: textView.string)
+        if let cell = activeCellEditor {
+            return MarkdownEditing.format(at: cell.selectedRange(), in: cell.string)
+        }
+        return MarkdownEditing.format(at: textView.selectedRange(), in: textView.string)
     }
 
     func currentAvailability() -> MarkdownEditing.FormatAvailability {
-        MarkdownEditing.availability(for: currentFormat(), sourceMode: mode == .source)
+        if let cell = activeCellEditor {
+            // A cell holds inline Markdown only: bold, italic, strike, code, links.
+            let format = MarkdownEditing.format(at: cell.selectedRange(), in: cell.string)
+            var available = MarkdownEditing.FormatAvailability.none
+            available.inline = !format.inlineCode
+            available.inlineCode = true
+            available.link = !format.inlineCode
+            return available
+        }
+        return MarkdownEditing.availability(for: currentFormat(), sourceMode: mode == .source)
+    }
+
+    /// Applies an inline Markdown edit to the cell being edited (one undo step in the cell).
+    private func applyToCell(_ cell: NSTextView, _ edit: (String, NSRange) -> EditResult) {
+        let result = edit(cell.string, cell.selectedRange())
+        let full = NSRange(location: 0, length: (cell.string as NSString).length)
+        if result.text != cell.string, cell.shouldChangeText(in: full, replacementString: result.text) {
+            cell.textStorage?.replaceCharacters(in: full, with: result.text)
+            cell.didChangeText()   // the cell restyles (WYSIWYG) on change
+        }
+        cell.setSelectedRange(result.selected)
+        refreshFormatToolbar()
+    }
+
+    private func toggleInCell(_ left: String, _ right: String, _ kind: StyleKind) -> Bool {
+        guard let cell = activeCellEditor else { return false }
+        applyToCell(cell) { MarkdownEditing.toggleInline(source: $0, selected: $1, left: left, right: right, kind: kind) }
+        return true
     }
 
     func refreshFormatToolbar() {
@@ -556,12 +607,20 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         actionItems[.image]?.isEnabled = available.image
     }
 
+    /// SF Symbols used by name that only exist on macOS 15+, mapped to macOS 14 equivalents.
+    static let sonomaFallbackSymbols = ["arrow.down.document": "square.and.arrow.down"]
+
     private static func symbol(_ name: String, fallback: String) -> NSImage? {
         NSImage(systemSymbolName: name, accessibilityDescription: nil)
             ?? NSImage(systemSymbolName: fallback, accessibilityDescription: nil)
     }
 
     private var lastEditorWidth: CGFloat = 0
+
+    @objc private func anyTextSelectionChanged(_ note: Notification) {
+        guard let editor = note.object as? NSTextView, editor !== textView, editor.window === window else { return }
+        refreshFormatToolbar()
+    }
 
     @objc private func editorFrameChanged() {
         let width = scroll.frame.width
@@ -590,7 +649,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
                 context.allowsImplicitAnimation = true
                 sidebarItem.animator().isCollapsed = collapse
             } completionHandler: { [weak self] in
-                self?.applyFitWidthIfNeeded()
+                MainActor.assumeIsolated { self?.applyFitWidthIfNeeded() }
             }
         } else {
             sidebarItem.isCollapsed = collapse
@@ -619,6 +678,46 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     var testTextViewPointerOverCopyIcon: Bool { canvas.textViewUsesPointerOverCopyIcon() }
     var testCopyButtonSize: CGSize { canvas.firstCopyButtonSize }
     var testInlineCodeBoxes: [CGRect] { textView.inlineCodeBoxRects() }
+    var testRenderedFrames: [CGRect] { canvas.testRenderedFrames }
+    /// PNG of the top of page `page` as shown in the editor (visual checks).
+    func testPageSnapshot(_ page: Int, height: CGFloat, to url: URL) {
+        let paper = canvas.paperRect(page: page)
+        let area = CGRect(x: paper.minX, y: paper.minY, width: paper.width, height: min(paper.height, height))
+        guard let rep = canvas.bitmapImageRepForCachingDisplay(in: area) else { return }
+        canvas.cacheDisplay(in: area, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: url)
+    }
+    /// The exported PDF's page `page` rasterised to a PNG (visual checks of export).
+    func testPDFPageSnapshot(_ page: Int, to url: URL) {
+        guard let data = PDFExporter.data(from: canvas), let pdfRep = NSPDFImageRep(data: data) else { return }
+        pdfRep.currentPage = page
+        let size = pdfRep.bounds.size
+        let image = NSImage(size: size, flipped: false) { rect in
+            NSColor.white.setFill(); rect.fill()
+            return pdfRep.draw(in: rect)
+        }
+        if let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
+            try? rep.representation(using: .png, properties: [:])?.write(to: url)
+        }
+    }
+    func testCanvasY(of location: Int) -> CGFloat { canvas.testCanvasY(of: location) }
+    func testPageContentRect(containing y: CGFloat) -> CGRect? { canvas.testPageContentRect(containing: y) }
+    func testEditRenderedBlock(_ index: Int, newSource: String) { canvas.testEditRenderedBlock(index, newSource: newSource) }
+    var testInlineMathPlacements: [CGRect] { textView.inlineMathPlacements().map(\.rect) }
+    var testPDFPageCount: Int {
+        guard let data = PDFExporter.data(from: canvas), let provider = CGDataProvider(data: data as CFData),
+              let pdf = CGPDFDocument(provider) else { return 0 }
+        return pdf.numberOfPages
+    }
+    /// Document y (canvas units) shown at the top edge of the visible area, below the toolbar.
+    /// Canvas y at the top of the visible area, relative to the first page (0 = document top).
+    var testVisibleTopY: CGFloat { visibleTopDocumentY() }
+    func testScrollVisibleTop(to y: CGFloat) { keepVisibleTop(at: y) }
+    /// First table's top edge, in screen points below the top of the visible area.
+    var testTableScreenTop: CGFloat? {
+        guard let table = canvas.firstTable else { return nil }
+        return (table.frame.minY - visibleTopDocumentY()) * scroll.magnification
+    }
     func testPDFLinks(documentDirectory: URL?) -> [(page: Int, url: String, rect: CGRect)] {
         canvas.documentDirectory = documentDirectory
         guard let data = PDFExporter.data(from: canvas) else { return [] }
@@ -777,9 +876,47 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     var testTableHasOnlyGitHubGrid: Bool { canvas.tableHasOnlyGitHubGrid() }
     var testTableEditChromeVisible: Bool { canvas.firstTable?.isEditingChromeVisible ?? false }
     func testTableCellDisplay(row: Int, column: Int) -> (text: String, bold: Bool)? { canvas.firstTable?.testCellDisplay(row: row, column: column) }
+    func testClickTableCell(row: Int, column: Int) { canvas.firstTable?.testClickCell(row: row, column: column) }
+    var testSelectedTableCell: (row: Int, column: Int)? { canvas.firstTable?.testSelectedCell }
+    var testTableGripsFollowSelection: Bool { canvas.firstTable?.testGripsFollowSelection ?? false }
+    /// Sends a key command (moveDown:, moveLeft:, …) to the cell's field editor, as a key press does.
+    func testCellKey(_ selector: Selector) {
+        (window?.firstResponder as? NSTextView)?.doCommand(by: selector)
+    }
+    /// The field editor of the cell being edited: (string, marker hidden?, first content char bold?).
+    var testCellEditorState: (text: String, markerHidden: Bool, contentBold: Bool)? {
+        guard let editor = window?.firstResponder as? NSTextView, editor !== textView,
+              let storage = editor.textStorage, storage.length > 2 else { return nil }
+        let marker = storage.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+        let content = storage.attribute(.font, at: 2, effectiveRange: nil) as? NSFont
+        return (storage.string, (marker?.pointSize ?? 12) < 1, content?.fontDescriptor.symbolicTraits.contains(.bold) ?? false)
+    }
+    func testSelectInCell(_ range: NSRange) {
+        guard let editor = window?.firstResponder as? NSTextView, editor !== textView else { return }
+        editor.setSelectedRange(range)
+        refreshFormatToolbar()
+    }
+
+    func testTypeInCell(_ text: String, at location: Int) {
+        guard let editor = window?.firstResponder as? NSTextView, editor !== textView else { return }
+        editor.setSelectedRange(NSRange(location: location, length: 0))
+        editor.insertText(text, replacementRange: editor.selectedRange())
+    }
     var testTableGripsVisible: (row: Bool, column: Bool) { canvas.firstTable?.testGripsVisible ?? (false, false) }
     var testTableBarButtonHit: Bool { canvas.firstTable?.testBarButtonHit(in: canvas) ?? false }
-    func testTableBar(_ command: TableEditBar.Command) { canvas.firstTable?.editBar.perform(command) }
+    func testTableBar(_ command: PagesTableView.Command) {
+        // Press the round button, as a click does.
+        if let button = canvas.firstTable?.buttons[command], !button.isHidden { button.performClick(nil) }
+    }
+    var testTableControlLayout: (visible: Set<String>, placedOnEdges: Bool)? { canvas.firstTable?.testControlLayout }
+    /// PNG of the first table plus its controls, rendered off-screen (for visual checks).
+    func testTableSnapshot(to url: URL) {
+        guard let table = canvas.firstTable else { return }
+        let area = table.frame.insetBy(dx: -60, dy: -50)
+        guard let rep = canvas.bitmapImageRepForCachingDisplay(in: area) else { return }
+        canvas.cacheDisplay(in: area, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: url)
+    }
     func testDragTableRow(before row: Int) { canvas.firstTable?.testDragRow(beforeStorageRow: row) }
     func testDragTableColumn(before column: Int) { canvas.firstTable?.testDragColumn(beforeColumn: column) }
     var testTableButtonIsViewBased: Bool { tableButton != nil }
@@ -912,6 +1049,61 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         canvas.relayout()
     }
 
+    var testBoldEnabled: Bool { formatButtons[.bold]?.isEnabled ?? false }
+    var testLastEditLength: Int { textView.lastEditLength }
+    /// Every attribute run of the document, as text (to compare incremental vs full restyles).
+    var testStyleSignature: String {
+        guard let storage = textView.textStorage else { return "" }
+        var out: [String] = []
+        storage.enumerateAttributes(in: NSRange(location: 0, length: storage.length)) { attrs, range, _ in
+            let font = attrs[.font] as? NSFont
+            let color = (attrs[.foregroundColor] as? NSColor)?.usingColorSpace(.sRGB)
+            let traits = font?.fontDescriptor.symbolicTraits.rawValue ?? 0
+            let style = attrs[.paragraphStyle] as? NSParagraphStyle
+            out.append("\(range.location)+\(range.length):\(font?.fontName ?? "-")@\(font.map { String(format: "%.2f", $0.pointSize) } ?? "-")/\(traits)/\(color.map { String(format: "%.2f,%.2f,%.2f,%.2f", $0.redComponent, $0.greenComponent, $0.blueComponent, $0.alphaComponent) } ?? "-")/k\(attrs[.kern] as? NSNumber ?? 0)/p\(style.map { String(format: "%.1f,%.1f,%.1f", $0.paragraphSpacing, $0.paragraphSpacingBefore, $0.headIndent) } ?? "-")/c\(attrs[.markaInlineCode] != nil)")
+        }
+        return out.joined(separator: "\n")
+    }
+    func testFullRestyle() { textView.applyStyles() }
+    /// Milliseconds for one page relayout (runs after every edit).
+    func testMeasureRelayout() -> Double {
+        let start = DispatchTime.now().uptimeNanoseconds
+        canvas.relayout()
+        return Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+    }
+    /// Milliseconds for a parse that misses the memo (as after every edit).
+    func testMeasureColdParse() -> Double {
+        let source = textView.string + " "
+        let start = DispatchTime.now().uptimeNanoseconds
+        _ = MarkdownSyntax.spans(in: source)
+        return Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+    }
+
+    /// Milliseconds for one full restyle of the document.
+    func testMeasureRestyle() -> Double {
+        let start = DispatchTime.now().uptimeNanoseconds
+        textView.applyStyles()
+        return Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+    }
+    /// Runs Bold and reports, *before the run loop can draw*, whether the inserted `**` are hidden.
+    func testBoldMarkersHiddenImmediately(at range: NSRange) -> (hidden: Bool, ms: Double) {
+        textView.setSelectedRange(range)
+        let start = DispatchTime.now().uptimeNanoseconds
+        boldAction()
+        let ms = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+        guard let storage = textView.textStorage, range.location < storage.length else { return (false, ms) }
+        let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont   // first inserted "*"
+        let color = storage.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? NSColor
+        return ((font?.pointSize ?? 12) < 1 && (color?.alphaComponent ?? 1) < 0.01, ms)
+    }
+    /// Page index (0-based) of the last character that is not whitespace.
+    var testLastContentPage: Int {
+        let ns = textView.string as NSString
+        var i = ns.length - 1
+        while i >= 0, let scalar = UnicodeScalar(ns.character(at: i)), CharacterSet.whitespacesAndNewlines.contains(scalar) { i -= 1 }
+        return i < 0 ? 0 : canvas.pageIndex(forCharacterAt: i)
+    }
+
     func testBold() {
         boldAction()
         refreshFormatToolbar()
@@ -925,6 +1117,8 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     @objc private func settingsChanged() { applySettings() }
 
     func applySettings() {
+        // Settings changes restyle and relayout the document; keep the line at the top in place.
+        let top = visibleTopDocumentY()
         let s = SettingsStore.shared.current
         textView.editorSettings = s
         canvas.geometry = s.geometry
@@ -935,7 +1129,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         scroll.contentView.backgroundColor = canvasColor
         textView.applyStyles()
         applyPageControlVisibility()
-        applyZoomFromSettings(persist: false)
+        applyZoomFromSettings(persist: false, keepingTop: top)
         refreshStatus()
     }
 
@@ -1093,14 +1287,20 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     @objc func applyHeading2() { textView.applyHeading(2); refreshFormatToolbar() }
     @objc func applyHeading3() { textView.applyHeading(3); refreshFormatToolbar() }
 
-    @objc func boldAction() { textView.toggleBoldfaceMarkdown(nil) }
-    @objc func italicAction() { textView.toggleItalicsMarkdown(nil) }
-    @objc func strikeAction() { textView.toggleStrikethroughMarkdown(nil) }
+    @objc func boldAction() { if !toggleInCell("**", "**", .strong) { textView.toggleBoldfaceMarkdown(nil) } }
+    @objc func italicAction() { if !toggleInCell("*", "*", .emphasis) { textView.toggleItalicsMarkdown(nil) } }
+    @objc func strikeAction() { if !toggleInCell("~~", "~~", .strikethrough) { textView.toggleStrikethroughMarkdown(nil) } }
     @objc func listAction() { textView.applyList(ordered: false, task: false) }
     @objc func orderedListAction() { textView.applyList(ordered: true, task: false) }
     @objc func taskListAction() { textView.applyList(ordered: false, task: true) }
-    @objc func linkAction() { textView.applyLink() }
-    @objc func codeAction() { textView.toggleInlineCodeMarkdown(nil) }
+    @objc func linkAction() {
+        if let cell = activeCellEditor {
+            applyToCell(cell) { MarkdownEditing.insertLink(source: $0, selected: $1, url: "https://") }
+            return
+        }
+        textView.applyLink()
+    }
+    @objc func codeAction() { if !toggleInCell("`", "`", .inlineCode) { textView.toggleInlineCodeMarkdown(nil) } }
     @objc func codeBlockAction() { insertFence("") }
     @objc func insertPlainCodeBlock() { insertFence("") }
     @objc func insertBashCodeBlock() { insertFence("bash") }
@@ -1233,8 +1433,13 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
             let rect = NSRect(x: scroll.bounds.maxX - 40, y: scroll.bounds.maxY - 8, width: 1, height: 1)
             popover.show(relativeTo: rect, of: scroll, preferredEdge: .minY)
         }
-        focusReplace ? findController.focusReplace() : findController.focusFind()
         findController.search(keepCurrent: false)
+        // The popover's window becomes key only after `show`; focusing earlier let AppKit pick the
+        // next key view (Replace).
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            focusReplace ? self.findController.focusReplace() : self.findController.focusFind()
+        }
     }
 
     var findSource: String { textView.string }
@@ -1309,6 +1514,16 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     var testEditAnchor: CGFloat? { editAnchor }
     var testHasPendingRelayout: Bool { canvas.hasPendingRelayout }
     var testFindButtonIsViewBased: Bool { findButton != nil }
+    var testFindLayoutAligned: Bool { findController.testLayoutIsAligned }
+    /// Renders the find popover's content to a PNG (visual checks).
+    func testFindSnapshot(to url: URL) {
+        let view = findController.view
+        view.frame = NSRect(origin: .zero, size: view.fittingSize)
+        view.layoutSubtreeIfNeeded()
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: url)
+    }
 
     @objc func toggleSourceMode() {
         mode = (mode == .wysiwyg) ? .source : .wysiwyg
@@ -1321,6 +1536,93 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
 
     @objc private func windowResized() {
         applyFitWidthIfNeeded()
+        saveWindowFrame()
+    }
+
+    // MARK: - Window position
+
+    private static let frameKey = "sk.lubino.marka.windowFrame"
+
+    static func forgetSavedFrame() {
+        UserDefaults.standard.removeObject(forKey: frameKey)
+    }
+
+    /// Mostly on a real screen (a frame from a disconnected display is ignored).
+    private static func isOnScreen(_ frame: NSRect) -> Bool {
+        NSScreen.screens.contains { screen in
+            let overlap = screen.visibleFrame.intersection(frame)
+            return !overlap.isNull && overlap.width * overlap.height >= frame.width * frame.height * 0.3
+        }
+    }
+
+    /// Reopen where the last document window was (cascaded if a window already sits there);
+    /// centred the first time — never AppKit's bottom-left default.
+    private func placeWindow(_ window: NSWindow) {
+        if let saved = UserDefaults.standard.string(forKey: Self.frameKey) {
+            var frame = NSRectFromString(saved)
+            if frame.width >= window.minSize.width, frame.height >= window.minSize.height, Self.isOnScreen(frame) {
+                let taken = NSApp.windows.contains { other in
+                    other !== window && other is DocumentWindow && other.isVisible
+                        && abs(other.frame.minX - frame.minX) < 4 && abs(other.frame.maxY - frame.maxY) < 4
+                }
+                if taken { frame = frame.offsetBy(dx: 22, dy: -22) }
+                window.setFrame(frame, display: false)
+                return
+            }
+        }
+        window.center()
+    }
+
+    @objc private func saveWindowFrame() {
+        guard let window, Self.isOnScreen(window.frame), !window.styleMask.contains(.fullScreen) else { return }
+        UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: Self.frameKey)
+    }
+
+    // MARK: - Zoom keeping the top line
+
+    /// Sets the zoom while keeping the line at the top of the visible area in place (exactly the
+    /// top of the document when it was showing). `NSScrollView.magnification` alone keeps the
+    /// *centre*, which pushed an opened document's first page out of view.
+    private func setMagnification(_ value: CGFloat) {
+        guard abs(scroll.magnification - value) > 0.0001 else { return }
+        let top = visibleTopDocumentY()
+        let atTop = top <= 1
+        scroll.magnification = value
+        restoreVisibleTop(top, atTop: atTop)
+    }
+
+    private func restoreVisibleTop(_ top: CGFloat, atTop: Bool) {
+        if atTop {
+            scrollToTop()
+        } else {
+            keepVisibleTop(at: top)
+        }
+    }
+
+    /// Canvas y shown at the top edge of the visible area (just below the toolbar), measured by
+    /// converting view coordinates — independent of how the clip view scales its insets.
+    private func visibleTopDocumentY() -> CGFloat {
+        let insetTop = scroll.contentInsets.top
+        let edge = NSPoint(x: scroll.bounds.midX, y: scroll.isFlipped ? insetTop : scroll.bounds.maxY - insetTop)
+        return canvas.convert(edge, from: scroll).y
+    }
+
+    private func keepVisibleTop(at y: CGFloat) {
+        let clip = scroll.contentView
+        for _ in 0..<2 {   // a second pass absorbs clamping / centring adjustments
+            let delta = y - visibleTopDocumentY()
+            guard abs(delta) > 0.25 else { return }
+            let origin = NSPoint(x: clip.bounds.minX, y: clip.bounds.minY + delta)
+            clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
+            scroll.reflectScrolledClipView(clip)
+        }
+    }
+
+    func scrollToTop() {
+        let clip = scroll.contentView
+        let origin = NSPoint(x: clip.bounds.minX, y: -clip.contentInsets.top)
+        clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
+        scroll.reflectScrolledClipView(clip)
     }
 
     func setZoomMode(_ mode: String) {
@@ -1339,19 +1641,20 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         SettingsStore.shared.current = s
     }
 
-    func applyZoomFromSettings(persist: Bool) {
+    func applyZoomFromSettings(persist: Bool, keepingTop: CGFloat? = nil) {
+        // Capture the top line before the relayout below (page padding differs per mode).
+        let top = keepingTop ?? visibleTopDocumentY()
         let s = SettingsStore.shared.current
         canvas.horizontalPadding = s.zoomMode == "auto" ? 8 : PageGeometry.canvasPadding
         canvas.relayout()
         if s.zoomMode == "auto" {
             scroll.hasHorizontalScroller = false
-            let mag = fitWidthMagnification()
-            scroll.magnification = mag
+            setMagnification(fitWidthMagnification())
         } else {
             scroll.hasHorizontalScroller = true
-            scroll.magnification = max(0.25, min(4, s.zoomFactor))
+            setMagnification(max(0.25, min(4, s.zoomFactor)))
         }
-        scroll.reflectScrolledClipView(scroll.contentView)
+        restoreVisibleTop(top, atTop: top <= 1)
         refreshZoomLabel()
         if persist {
             var next = SettingsStore.shared.current
@@ -1363,7 +1666,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     func applyFitWidthIfNeeded() {
         let mode = SettingsStore.shared.current.zoomMode
         guard mode == "auto" else { return }
-        scroll.magnification = fitWidthMagnification()
+        setMagnification(fitWidthMagnification())
         refreshZoomLabel()
     }
 
@@ -1374,7 +1677,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         return max(0.25, min(4, available / docWidth))
     }
 
-    static let autoZoomTitle = "Auto %"
+    static let autoZoomTitle = "Auto"
 
     static func percentString(_ magnification: CGFloat) -> String {
         let formatter = NumberFormatter()
@@ -1389,7 +1692,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     func refreshZoomLabel() {
         guard let popup = zoomPopup else { return }
         let items = popup.itemArray
-        // Auto shows "Auto %" — the percentage changes with the window, the mode is what matters.
+        // Auto shows just "Auto" — the percentage changes with the window, the mode is what matters.
         let title = SettingsStore.shared.current.zoomMode == "auto" ? Self.autoZoomTitle : Self.percentString(scroll.magnification)
         if items.first?.title != title { items.first?.title = title }
         let s = SettingsStore.shared.current

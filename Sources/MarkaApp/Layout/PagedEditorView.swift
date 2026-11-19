@@ -17,6 +17,9 @@ final class PagedEditorView: NSView {
     private var codeBackgrounds: [CodeBlockBackgroundView] = []
     private var codeHeaders: [CodeBlockHeaderView] = []
     private var pagesTables: [PagesTableView] = []
+    /// Drawn ```math / $$ / ```mermaid blocks (RenderedBlocks.swift).
+    var renderedViews: [RenderedBlockView] = []
+    var renderedEditor: RenderedSourceEditor?
     private let linkCard = LinkCardView(frame: .zero)
     private var relayoutQueued = false
     private var isRelayouting = false
@@ -163,9 +166,10 @@ final class PagedEditorView: NSView {
             holes.append(contentsOf: pageBreakHoles(pageCount: pages))
             textView.textContainer?.exclusionPaths = holes.map { NSBezierPath(rect: $0) }
             ensureLayout()
-            let used = usedHeight()
-            let needed = max(1, PageLayout.pageCount(usedHeightWithExclusions: used, currentPages: pages, geometry: geometry))
-            let nextSpacing = textView.mode == .wysiwyg ? measureTableSpacing() : [:]
+            let needed = contentPageCount(laidOutPages: pages)
+            let nextSpacing = textView.mode == .wysiwyg
+                ? measureTableSpacing().merging(measureRenderedSpacing()) { $1 }
+                : [:]
             if needed == pages, spacingMatches(spacing, nextSpacing) { break }
             pages = needed
             spacing = nextSpacing
@@ -187,6 +191,7 @@ final class PagedEditorView: NSView {
         refreshImages()
         refreshCodeChrome()
         refreshTables()
+        refreshRenderedBlocks()
         refreshLinkCard()
         for header in codeHeaders {
             addSubview(header, positioned: .above, relativeTo: nil)
@@ -195,6 +200,7 @@ final class PagedEditorView: NSView {
             addSubview(linkCard, positioned: .above, relativeTo: nil)
         }
         needsDisplay = true
+        applyTableAnchor()
         onPagesChanged?(pageCount)
         isRelayouting = false
         if relayoutQueued {
@@ -227,6 +233,46 @@ final class PagedEditorView: NSView {
         } else {
             textView.layoutManager?.ensureLayout(for: textView.textContainer!)
         }
+    }
+
+    /// Pages the content needs: through the last non-whitespace character (its line fragment
+    /// includes paragraph spacing, so a table's overlay space counts) and the caret's page. Can
+    /// shrink; trailing blank lines never add an empty page.
+    func contentPageCount(laidOutPages: Int) -> Int {
+        let ns = textView.string as NSString
+        var last = ns.length - 1
+        while last >= 0, let scalar = UnicodeScalar(ns.character(at: last)), CharacterSet.whitespacesAndNewlines.contains(scalar) {
+            last -= 1
+        }
+        var bottom: CGFloat = 0
+        if last >= 0 {
+            bottom = lineBottom(at: last)
+        }
+        var pages = last < 0 ? 1 : PageLayout.pageIndex(forTextY: max(0, bottom - 1), geometry: geometry) + 1
+        let caret = textView.selectedRange().location
+        if caret > last + 1, caret <= ns.length, textView.window?.firstResponder === textView {
+            // Blank lines being typed at the end: keep the page that shows the caret.
+            pages = max(pages, PageLayout.pageIndex(forTextY: caretY(at: caret) + 1, geometry: geometry) + 1)
+        }
+        // Text that overflows the last laid-out page (no exclusion hole yet) needs another page.
+        if bottom > PageLayout.lastContentBottom(pageCount: laidOutPages, geometry: geometry) + 0.5 {
+            pages = max(pages, laidOutPages + 1)
+        }
+        return max(1, pages)
+    }
+
+    /// Bottom (text-container y) of the line fragment holding `utf16Offset`, paragraph spacing included.
+    private func lineBottom(at utf16Offset: Int) -> CGFloat {
+        if let tlm = textView.textLayoutManager, let content = textView.textContentStorage,
+           let loc = content.location(tlm.documentRange.location, offsetBy: utf16Offset),
+           let fragment = tlm.textLayoutFragment(for: loc) {
+            return fragment.layoutFragmentFrame.maxY
+        }
+        if let lm = textView.layoutManager {
+            let glyph = lm.glyphIndexForCharacter(at: utf16Offset)
+            return lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).maxY
+        }
+        return 0
     }
 
     func usedHeight() -> CGFloat {
@@ -418,6 +464,8 @@ final class PagedEditorView: NSView {
         let padX = horizontalPadding
         let padY = PageGeometry.canvasPadding
         for block in MarkdownSyntax.codeBlocks(in: textView.string) {
+            // ```math / ```mermaid are drawn, not shown as code (source mode shows them as code).
+            if textView.mode == .wysiwyg, MarkdownSyntax.isRendered(language: block.language) { continue }
             var rect = rectForUTF16Range(block.group)
             guard rect.height > 4 else { continue }
             rect = CGRect(
@@ -857,14 +905,44 @@ final class PagedEditorView: NSView {
         }
     }
 
+    /// True while a table edit replaces the text (the controller skips its caret anchor).
+    private(set) var isApplyingTableEdit = false
+    /// The edited table's position relative to the visible area, kept until relayout settles.
+    private var tableAnchor: (location: Int, offset: CGFloat, time: TimeInterval)?
+
+    /// Scroll so the anchored table sits where it was before the edit (queued relayout passes can
+    /// still shift it, so this runs after each pass until none is pending).
+    private func applyTableAnchor() {
+        guard let anchor = tableAnchor, let clip = enclosingScrollView?.contentView else { return }
+        if !relayoutQueued || ProcessInfo.processInfo.systemUptime - anchor.time > 1 { tableAnchor = nil }
+        guard let table = pagesTables.first(where: { $0.block.range.location == anchor.location }) else { return }
+        let delta = (table.frame.minY - clip.bounds.minY) - anchor.offset
+        guard abs(delta) > 0.25 else { return }
+        let origin = NSPoint(x: clip.bounds.minX, y: clip.bounds.minY + delta)
+        clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
+        enclosingScrollView?.reflectScrolledClipView(clip)
+    }
+
     private func applyTableEdit(_ result: EditResult) {
         rememberFocus(result)
+        // Keep the table where it is on screen: measure before, restore after the relayout.
+        let location = tableFocus?.location
+        let clip = enclosingScrollView?.contentView
+        let before = location.flatMap { loc in pagesTables.first { $0.block.range.location == loc } }
+            .map { $0.frame.minY - (clip?.bounds.minY ?? 0) }
         // The edited cell was already committed; detach it so resigning focus during the edit
         // cannot commit its stale text into the new table shape.
         pagesTables.forEach { $0.detachEditingField() }
-        textView.applyEdit(result)
+        isApplyingTableEdit = true
+        // A zero-length caret: a selection inside the hidden table source would be drawn.
+        textView.applyEdit(EditResult(text: result.text, selected: NSRange(location: result.selected.location, length: 0)))
+        isApplyingTableEdit = false
+        if let before, let loc = tableFocus?.location ?? location {
+            tableAnchor = (loc, before, ProcessInfo.processInfo.systemUptime)
+        }
         relayout()
         restoreTableFieldFocus()
+        applyTableAnchor()
     }
 
     func restoreTableFieldFocusForTests() { restoreTableFieldFocus() }
@@ -895,6 +973,7 @@ final class PagedEditorView: NSView {
         }
         if phase == .behindText {
             for block in MarkdownSyntax.codeBlocks(in: textView.string) {
+                if textView.mode == .wysiwyg, MarkdownSyntax.isRendered(language: block.language) { continue }
                 var rect = rectForUTF16Range(block.group)
                 rect.origin.x += textView.frame.minX
                 rect.origin.y += textView.frame.minY
@@ -953,6 +1032,7 @@ final class PagedEditorView: NSView {
             for overlay in pagesTables {
                 overlay.drawExported(intoPage: paper, paperOnCanvas: paperOnCanvas)
             }
+            drawRenderedBlocks(intoPage: paper, paperOnCanvas: paperOnCanvas)
         }
     }
 }

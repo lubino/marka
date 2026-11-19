@@ -524,6 +524,73 @@ enum MarkaTests {
         let long = Array(repeating: "word", count: 461).joined(separator: " ")
         expect(DocumentStats.compute(long).readingMinutes == 3, "461 words ≈ 3 min")
 
+        // Math (LaTeX subset)
+        expect(MathParser.parse("\\text{if } x").rowItems.first == .text("if "), "\\text keeps its spaces")
+        if case .fraction(let num, let den, bar: true) = MathParser.parse("\\frac{a+1}{b}") {
+            expect(num == .row([.atom("a", .variable), .atom("+", .binary), .atom("1", .number)]), "fraction numerator, got \(num)")
+            expect(den == .atom("b", .variable), "fraction denominator")
+        } else { expect(false, "\\frac parses to a fraction") }
+        if case .scripts(.atom("x", .variable), let sup, let sub) = MathParser.parse("x_i^{2}") {
+            expect(sup == .atom("2", .number) && sub == .atom("i", .variable), "sub- and superscript, got \(String(describing: sup)) \(String(describing: sub))")
+        } else { expect(false, "x_i^{2} parses to scripts") }
+        if case .scripts(.largeOp("∑", limits: true), let sup, let sub) = MathParser.parse("\\sum_{k=1}^{n}") {
+            expect(sup == .atom("n", .variable) && sub != nil, "sum with limits")
+        } else { expect(false, "\\sum_{k=1}^{n} parses to a large operator with scripts") }
+        expect(MathParser.parse("\\alpha \\leq \\infty") == .row([.atom("α", .variable), .atom("≤", .relation), .atom("∞", .ordinary)]), "Greek, relations, symbols")
+        if case .root(_, let index) = MathParser.parse("\\sqrt[3]{x}") { expect(index == .atom("3", .number), "root index") } else { expect(false, "\\sqrt[3]{x}") }
+        if case .delimited("(", _, ")") = MathParser.parse("\\left( \\frac{1}{2} \\right)") {} else { expect(false, "\\left( … \\right)") }
+        if case .matrix(let rows, "(", ")", .centered) = MathParser.parse("\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}") {
+            expect(rows.count == 2 && rows[0].count == 2 && rows[1][1] == .atom("4", .number), "pmatrix cells, got \(rows)")
+        } else { expect(false, "pmatrix parses to a matrix") }
+        if case .matrix(let rows, "{", "", .cases) = MathParser.parse("f(x)=\\begin{cases} 1 & x>0 \\\\ 0 & \\text{otherwise} \\end{cases}").rowItems.last ?? .row([]) {
+            expect(rows.count == 2 && rows[1][1] == .text("otherwise"), "cases rows with \\text, got \(rows)")
+        } else { expect(false, "cases parses") }
+        expect(MathParser.parse("\\sin x") == .row([.atom("sin", .operatorName), .atom("x", .variable)]), "function names are upright operators")
+        if case .styled(_, .blackboard) = MathParser.parse("\\mathbb{R}") {} else { expect(false, "\\mathbb") }
+        if case .accent(_, "→", wide: false) = MathParser.parse("\\vec{v}") {} else { expect(false, "\\vec accent") }
+        if case .row(let items) = MathParser.parse("\\nosuchcommand x"), case .error("\\nosuchcommand") = items.first {} else { expect(false, "unknown commands become visible errors") }
+        expect(MathParser.parse("a\\,b") == .row([.atom("a", .variable), .space(3.0 / 18), .atom("b", .variable)]), "thin space")
+
+        // Math in Markdown
+        func mathSpans(_ source: String) -> [String] {
+            MarkdownSyntax.spans(in: source).filter { $0.kind == .inlineMath && $0.role == .content }.map { (source as NSString).substring(with: $0.range) }
+        }
+        expect(mathSpans("Euler: $e^{i\\pi}+1=0$ done") == ["e^{i\\pi}+1=0"], "inline math, got \(mathSpans("Euler: $e^{i\\pi}+1=0$ done"))")
+        expect(mathSpans("It costs $5 and $10 today").isEmpty, "prices are not math")
+        expect(mathSpans("Code `$x$` stays code").isEmpty, "dollars inside inline code are not math")
+        expect(mathSpans("Escaped \\$x$ is text").isEmpty, "an escaped dollar does not open math")
+        let display = MarkdownSyntax.codeBlocks(in: "Text\n\n$$\nx^2\n$$\n\n$$ y $$\n\n```mermaid\ngraph TD\nA-->B\n```\n")
+        expect(display.map { $0.language ?? "" } == ["math", "math", "mermaid"], "display math (multi- and single-line) and mermaid fences, got \(display.map(\.language))")
+        expect(display.first?.innerText == "x^2" && display[1].innerText.trimmingCharacters(in: .whitespaces) == "y", "display math content")
+        expect(MarkdownSyntax.isRendered(language: "mermaid") && MarkdownSyntax.isRendered(language: "math") && !MarkdownSyntax.isRendered(language: "swift"), "rendered languages")
+
+        // Mermaid
+        if case .flowchart(let chart) = Mermaid.parse("flowchart LR\n  A[Start] -->|go| B{Ready?}\n  B -- yes --> C((Done))\n  B -.-> D[(Store)]\n  C ==> A\n  %% comment\n  E & F --- G") {
+            expect(chart.direction == .leftRight, "flowchart direction")
+            expect(chart.node("A")?.label == "Start" && chart.node("B")?.shape == .rhombus && chart.node("C")?.shape == .circle && chart.node("D")?.shape == .database, "node labels and shapes, got \(chart.nodes)")
+            expect(chart.edges.count == 6, "edges incl. & fan-out, got \(chart.edges.count)")
+            expect(chart.edges[0].label == "go" && chart.edges[1].label == "yes", "edge labels (|go| and -- yes -->), got \(chart.edges.map(\.label))")
+            expect(chart.edges[2].style == .dotted && chart.edges[3].style == .thick && chart.edges[4].style == .open, "edge styles")
+            let layout = chart.layout { node in CGSize(width: CGFloat(node.label.count * 8 + 24), height: 36) }
+            let a = layout.nodes["A"]!, b = layout.nodes["B"]!, c = layout.nodes["C"]!
+            expect(a.maxX < b.minX && b.maxX < c.minX, "LR layout places ranks left to right, got \(a) \(b) \(c)")
+            let rects = Array(layout.nodes.values)
+            var overlap = false
+            for x in rects.indices { for y in rects.indices where x < y { if rects[x].intersects(rects[y]) { overlap = true } } }
+            expect(!overlap, "no two nodes overlap")
+            expect(layout.edges.count == chart.edges.count && layout.edges.allSatisfy { $0.count >= 2 }, "every edge has a path")
+            expect(rects.allSatisfy { CGRect(origin: .zero, size: layout.size).contains($0) }, "layout size contains every node")
+        } else { expect(false, "flowchart parses") }
+        if case .sequence(let seq) = Mermaid.parse("sequenceDiagram\n  participant A as Alice\n  actor B\n  A->>B: Hello\n  B-->>A: Hi\n  Note right of B: thinks\n  A-xB: bye") {
+            expect(seq.participants.map(\.label) == ["Alice", "B"] && seq.participants[1].isActor, "participants and actors")
+            expect(seq.events.count == 4, "messages and notes, got \(seq.events.count)")
+            if case .message(_, _, let text, let dashed, .filled) = seq.events[1] { expect(text == "Hi" && dashed, "dashed reply") } else { expect(false, "reply message") }
+        } else { expect(false, "sequence parses") }
+        if case .pie(let pie) = Mermaid.parse("pie title Pets\n  \"Dogs\" : 386\n  \"Cats\" : 85.5") {
+            expect(pie.title == "Pets" && pie.slices.map(\.label) == ["Dogs", "Cats"] && pie.slices[1].value == 85.5, "pie title and slices")
+        } else { expect(false, "pie parses") }
+        expect(Mermaid.parse("gantt\n title x") == .unsupported("gantt"), "other diagram types are reported, not guessed")
+
         // Table row / column moves
         let grid = "| A | B | C |\n| --- | :-: | --: |\n| a1 | b1 | c1 |\n| a2 | b2 | c2 |\n| a3 | b3 | c3 |"
         if let a3 = TableMutator.cell(at: (grid as NSString).range(of: "a3").location, in: grid),

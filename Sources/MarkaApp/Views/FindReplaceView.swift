@@ -18,12 +18,15 @@ final class FindReplaceViewController: NSViewController, NSSearchFieldDelegate, 
     weak var target: FindReplaceTarget?
 
     let findField = NSSearchField()
-    let replaceField = NSTextField()
+    /// Same capsule as the find field (search field without the magnifier) so both rows match.
+    let replaceField = NSSearchField()
     private let countLabel = NSTextField(labelWithString: "")
-    private let previousButton = NSButton()
-    private let nextButton = NSButton()
-    private let replaceButton = NSButton(title: "Replace", target: nil, action: nil)
-    private let replaceAllButton = NSButton(title: "All", target: nil, action: nil)
+    /// ⌃ | ⌄ — previous / next match.
+    private let stepControl = NSSegmentedControl()
+    /// Replace | All — same size and style as the step control, so the right column lines up.
+    private let replaceControl = NSSegmentedControl()
+    static let fieldWidth: CGFloat = 240
+    static let controlWidth: CGFloat = 132
     private let matchCase = NSButton(checkboxWithTitle: "Match Case", target: nil, action: nil)
     private let wholeWords = NSButton(checkboxWithTitle: "Whole Words", target: nil, action: nil)
 
@@ -35,61 +38,91 @@ final class FindReplaceViewController: NSViewController, NSSearchFieldDelegate, 
     }
 
     override func loadView() {
+        for field in [findField, replaceField] {
+            field.delegate = self
+            field.controlSize = .regular
+            field.font = .systemFont(ofSize: NSFont.systemFontSize)
+            field.widthAnchor.constraint(equalToConstant: Self.fieldWidth).isActive = true
+        }
         findField.placeholderString = "Find"
-        findField.delegate = self
         findField.sendsSearchStringImmediately = true
         findField.target = self
         findField.action = #selector(findChanged)
-        findField.widthAnchor.constraint(equalToConstant: 220).isActive = true
-
-        countLabel.textColor = .secondaryLabelColor
-        countLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-        countLabel.alignment = .right
-        countLabel.widthAnchor.constraint(equalToConstant: 64).isActive = true
-
-        for (button, symbol, tip, action) in [
-            (previousButton, "chevron.up", "Previous (⇧⌘G)", #selector(findPrevious)),
-            (nextButton, "chevron.down", "Next (⌘G)", #selector(findNext))
-        ] {
-            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)
-            button.bezelStyle = .texturedRounded
-            button.toolTip = tip
-            button.target = self
-            button.action = action
-        }
-        let arrows = NSStackView(views: [previousButton, nextButton])
-        arrows.spacing = 2
-
         replaceField.placeholderString = "Replace"
-        replaceField.delegate = self
-        replaceField.widthAnchor.constraint(equalToConstant: 220).isActive = true
-        replaceButton.target = self
-        replaceButton.action = #selector(replaceCurrent)
-        replaceButton.toolTip = "Replace this match and find the next"
-        replaceAllButton.target = self
-        replaceAllButton.action = #selector(replaceAll)
-        replaceAllButton.toolTip = "Replace every match (one undo step)"
-        [replaceButton, replaceAllButton].forEach { $0.bezelStyle = .push; $0.controlSize = .small }
+        (replaceField.cell as? NSSearchFieldCell)?.searchButtonCell = nil   // no magnifier on Replace
+        replaceField.sendsWholeSearchString = true
+
+        func configure(_ control: NSSegmentedControl, _ segments: [(image: String?, label: String?, tip: String)]) {
+            control.segmentCount = segments.count
+            control.trackingMode = .momentary
+            control.segmentStyle = .rounded
+            control.controlSize = .regular
+            for (index, segment) in segments.enumerated() {
+                if let image = segment.image {
+                    control.setImage(NSImage(systemSymbolName: image, accessibilityDescription: segment.tip), forSegment: index)
+                }
+                if let label = segment.label { control.setLabel(label, forSegment: index) }
+                control.setToolTip(segment.tip, forSegment: index)
+                control.setWidth((Self.controlWidth - 4) / CGFloat(segments.count), forSegment: index)
+            }
+            control.target = self
+            control.widthAnchor.constraint(equalToConstant: Self.controlWidth).isActive = true
+        }
+        configure(stepControl, [
+            ("chevron.up", nil, "Previous match (⇧⌘G)"),
+            ("chevron.down", nil, "Next match (⌘G)")
+        ])
+        stepControl.action = #selector(stepTapped(_:))
+        configure(replaceControl, [
+            (nil, "Replace", "Replace this match and find the next"),
+            (nil, "All", "Replace every match (one undo step)")
+        ])
+        replaceControl.action = #selector(replaceTapped(_:))
 
         for box in [matchCase, wholeWords] {
             box.target = self
             box.action = #selector(findChanged)
-            box.controlSize = .small
+            box.controlSize = .regular
         }
+        countLabel.textColor = .secondaryLabelColor
+        countLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        countLabel.alignment = .right
+        let options = NSStackView(views: [matchCase, wholeWords])
+        options.spacing = 16
 
-        let findRow = NSStackView(views: [findField, countLabel, arrows])
-        findRow.spacing = 8
-        let replaceRow = NSStackView(views: [replaceField, replaceButton, replaceAllButton])
-        replaceRow.spacing = 8
-        let optionRow = NSStackView(views: [matchCase, wholeWords])
-        optionRow.spacing = 14
-        let stack = NSStackView(views: [findRow, replaceRow, optionRow])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 12, right: 14)
-        view = stack
+        // Two columns: fields (same width, same left edge) and controls (same width, same right
+        // edge); the bottom row holds the options and the match count.
+        let grid = NSGridView(views: [
+            [findField, stepControl],
+            [replaceField, replaceControl],
+            [options, countLabel]
+        ])
+        grid.rowSpacing = 10
+        grid.columnSpacing = 10
+        grid.rowAlignment = .none
+        for row in 0..<grid.numberOfRows { grid.row(at: row).yPlacement = .center }
+        grid.column(at: 1).xPlacement = .trailing
+        grid.row(at: 2).topPadding = 2
+        grid.translatesAutoresizingMaskIntoConstraints = false
+
+        let root = NSView()
+        root.addSubview(grid)
+        NSLayoutConstraint.activate([
+            grid.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
+            grid.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
+            grid.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
+            grid.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16)
+        ])
+        view = root
         refreshButtons()
+    }
+
+    @objc private func stepTapped(_ sender: NSSegmentedControl) {
+        sender.selectedSegment == 0 ? findPrevious() : findNext()
+    }
+
+    @objc private func replaceTapped(_ sender: NSSegmentedControl) {
+        sender.selectedSegment == 0 ? replaceCurrent() : replaceAll()
     }
 
     func focusFind() {
@@ -175,10 +208,8 @@ final class FindReplaceViewController: NSViewController, NSSearchFieldDelegate, 
 
     private func refreshButtons() {
         let any = !matches.isEmpty
-        previousButton.isEnabled = any
-        nextButton.isEnabled = any
-        replaceButton.isEnabled = any
-        replaceAllButton.isEnabled = any
+        stepControl.isEnabled = any
+        replaceControl.isEnabled = any
     }
 
     // Return = next, ⇧Return = previous in the find field; Return in replace = Replace.
@@ -211,6 +242,20 @@ final class FindReplaceViewController: NSViewController, NSSearchFieldDelegate, 
     // MARK: - Testing
 
     var testCountText: String { countLabel.stringValue }
+
+    /// Fields share their left edge and size; the two segmented controls share their right edge
+    /// and size; each control is vertically centred on its field.
+    var testLayoutIsAligned: Bool {
+        _ = view
+        view.frame = NSRect(origin: .zero, size: view.fittingSize)
+        view.layoutSubtreeIfNeeded()
+        func f(_ v: NSView) -> CGRect { v.convert(v.bounds, to: view) }
+        let find = f(findField), replace = f(replaceField), step = f(stepControl), rep = f(replaceControl)
+        return abs(find.minX - replace.minX) < 0.5 && abs(find.width - replace.width) < 0.5
+            && abs(find.height - replace.height) < 0.5
+            && abs(step.maxX - rep.maxX) < 0.5 && abs(step.width - rep.width) < 0.5
+            && abs(step.midY - find.midY) < 1 && abs(rep.midY - replace.midY) < 1
+    }
     func testSetOptions(caseSensitive: Bool, wholeWord: Bool) {
         _ = view
         matchCase.state = caseSensitive ? .on : .off

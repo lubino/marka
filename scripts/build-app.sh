@@ -57,7 +57,19 @@ rm -rf "$(dirname "$ICONSET_TMP")"
 
 ICON_NAME_PLIST=""
 ICON_SOURCE="$ROOT_DIR/Resources/AppIcon.icon"
-if ACTOOL="$(xcrun --find actool 2>/dev/null)" && [[ -d "$ICON_SOURCE" ]]; then
+# actool ships only with Xcode. Use the active toolchain's, else any installed Xcode's (via
+# DEVELOPER_DIR) — the Swift build itself keeps using the Command Line Tools.
+ACTOOL="$(xcrun --find actool 2>/dev/null || true)"
+if [[ -z "$ACTOOL" ]]; then
+    for XCODE in $(ls -d /Applications/Xcode*.app 2>/dev/null | sort -r); do
+        if CANDIDATE="$(DEVELOPER_DIR="$XCODE/Contents/Developer" xcrun --find actool 2>/dev/null)"; then
+            ACTOOL="$CANDIDATE"
+            export DEVELOPER_DIR="$XCODE/Contents/Developer"
+            break
+        fi
+    done
+fi
+if [[ -n "$ACTOOL" ]] && [[ -d "$ICON_SOURCE" ]]; then
     ACTOOL_MAJOR="$("$ACTOOL" --version 2>/dev/null | sed -n 's/.*<string>\([0-9][0-9]*\)\..*/\1/p' | head -1)"
     if [[ "${ACTOOL_MAJOR:-0}" -ge 26 ]]; then
         echo "==> Compiling Liquid Glass icon with actool ${ACTOOL_MAJOR}…"

@@ -1,117 +1,69 @@
 import AppKit
 
-/// Floating glass bar shown while the cursor is in a table: insert / delete rows and columns.
-final class TableEditBar: NSView {
-    enum Command: CaseIterable {
-        case rowAbove, rowBelow, columnLeft, columnRight, deleteRow, deleteColumn
+/// Round add (+, green) / remove (−, red) control placed next to a table's drag grip.
+final class TableCircleButton: NSButton {
+    enum Kind { case add, remove }
+    let kind: Kind
+    private var hovered = false
+    static let size: CGFloat = 16
 
-        var symbol: String {
-            switch self {
-            case .rowAbove: return "arrow.up.to.line.compact"
-            case .rowBelow: return "arrow.down.to.line.compact"
-            case .columnLeft: return "arrow.left.to.line.compact"
-            case .columnRight: return "arrow.right.to.line.compact"
-            case .deleteRow: return "rectangle.split.1x2"
-            case .deleteColumn: return "rectangle.split.2x1"
-            }
-        }
-
-        var title: String {
-            switch self {
-            case .rowAbove: return "Insert Row Above"
-            case .rowBelow: return "Insert Row Below"
-            case .columnLeft: return "Insert Column Left"
-            case .columnRight: return "Insert Column Right"
-            case .deleteRow: return "Delete Row"
-            case .deleteColumn: return "Delete Column"
-            }
-        }
-
-        var isDestructive: Bool { self == .deleteRow || self == .deleteColumn }
-    }
-
-    static let buttonSize: CGFloat = 24
-    static let height: CGFloat = 30
-    static var width: CGFloat {
-        CGFloat(Command.allCases.count) * buttonSize + 4 * 2 + 10   // + divider gap
-    }
-
-    var onCommand: ((Command) -> Void)?
-    private(set) var buttons: [Command: NSButton] = [:]
-    private let glass: NSView
-
-    override init(frame frameRect: NSRect) {
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: Self.height))
-        if GlassChrome.usesLiquidGlass {
-            glass = GlassChrome.wrap(content, style: .regular, cornerRadius: Self.height / 2, interactive: true)
-        } else {
-            let effect = NSVisualEffectView()
-            effect.material = .popover
-            effect.blendingMode = .withinWindow
-            effect.state = .active
-            effect.wantsLayer = true
-            effect.layer?.cornerRadius = Self.height / 2
-            effect.layer?.masksToBounds = true
-            content.autoresizingMask = [.width, .height]
-            effect.addSubview(content)
-            glass = effect
-        }
-        super.init(frame: frameRect)
+    init(kind: Kind, title: String) {
+        self.kind = kind
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.size, height: Self.size))
+        isBordered = false
+        self.title = ""
+        toolTip = title
+        setAccessibilityLabel(title)
+        refusesFirstResponder = true
         wantsLayer = true
-        shadow = NSShadow()
-        shadow?.shadowColor = NSColor.black.withAlphaComponent(0.18)
-        shadow?.shadowBlurRadius = 6
-        shadow?.shadowOffset = NSSize(width: 0, height: -1)
-        glass.frame = bounds
-        glass.autoresizingMask = [.width, .height]
-        addSubview(glass)
-
-        var x: CGFloat = 4
-        for command in Command.allCases {
-            if command == .deleteRow { x += 10 }   // gap between insert and delete groups
-            let button = NSButton(frame: NSRect(x: x, y: (Self.height - Self.buttonSize) / 2, width: Self.buttonSize, height: Self.buttonSize))
-            let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
-            button.image = NSImage(systemSymbolName: command.symbol, accessibilityDescription: command.title)?.withSymbolConfiguration(config)
-            button.imagePosition = .imageOnly
-            button.isBordered = false
-            button.bezelStyle = .regularSquare
-            button.contentTintColor = command.isDestructive ? .systemRed : .labelColor
-            button.toolTip = command.title
-            button.setAccessibilityLabel(command.title)
-            button.refusesFirstResponder = true
-            button.target = self
-            button.action = #selector(tapped(_:))
-            button.tag = Command.allCases.firstIndex(of: command) ?? 0
-            content.addSubview(button)
-            buttons[command] = button
-            x += Self.buttonSize
-        }
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 
-    @objc private func tapped(_ sender: NSButton) {
-        onCommand?(Command.allCases[sender.tag])
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
+    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true; NSCursor.pointingHand.set() }
+    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
 
-    /// Hit-test the buttons by frame (the glass wraps them in private views).
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard !isHidden, frame.contains(point) else { return nil }
-        let local = convert(point, from: superview)
-        for button in buttons.values {
-            let rect = button.convert(button.bounds, to: self)
-            if rect.contains(local) { return button }
+    override func draw(_ dirtyRect: NSRect) {
+        let circle = bounds.insetBy(dx: 1, dy: 1)
+        let base: NSColor = kind == .add ? .systemGreen : .systemRed
+        let fill = hovered ? (base.blended(withFraction: 0.15, of: .white) ?? base) : base
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.25)
+        shadow.shadowBlurRadius = 2
+        shadow.shadowOffset = NSSize(width: 0, height: -0.5)
+        shadow.set()
+        let path = NSBezierPath(ovalIn: circle)
+        NSGradient(starting: fill.blended(withFraction: 0.25, of: .white) ?? fill, ending: fill)?.draw(in: path, angle: -90)
+        NSGraphicsContext.restoreGraphicsState()
+        NSColor.white.withAlphaComponent(0.9).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+        // Glyph: + or −.
+        NSColor.white.setStroke()
+        let glyph = NSBezierPath()
+        let arm: CGFloat = 3.6
+        glyph.move(to: CGPoint(x: circle.midX - arm, y: circle.midY))
+        glyph.line(to: CGPoint(x: circle.midX + arm, y: circle.midY))
+        if kind == .add {
+            glyph.move(to: CGPoint(x: circle.midX, y: circle.midY - arm))
+            glyph.line(to: CGPoint(x: circle.midX, y: circle.midY + arm))
         }
-        return self
+        glyph.lineWidth = 1.8
+        glyph.lineCapStyle = .round
+        glyph.stroke()
     }
-
-    func perform(_ command: Command) { onCommand?(command) }
 }
 
 /// Drag handle for moving the focused row (vertical) or column (horizontal).
@@ -121,7 +73,7 @@ final class TableGripView: NSView {
     /// Called with the drag position in the *table view's* coordinates.
     var onDrag: ((_ phase: NSEvent.Phase, _ point: CGPoint) -> Void)?
 
-    static let rowSize = CGSize(width: 12, height: 18)
+    static let rowSize = CGSize(width: 12, height: 12)
     static let columnSize = CGSize(width: 18, height: 12)
 
     init(axis: Axis) {
