@@ -1,12 +1,26 @@
-# Marka
+# Marka — a free, native WYSIWYG Markdown editor for Mac
 
-Native macOS Markdown editor with a live A4 page preview.
+**Marka** is a free, open-source Markdown editor for macOS. You write like in Word or Pages — no visible `**` or `#` — while the file stays clean GitHub-Flavored Markdown. Your document is laid out on real A4 pages, exactly as it will print or export to PDF.
 
-You edit like in Word. The file stays clean Markdown. The pages on screen match print and PDF.
+Native Swift and AppKit: no Electron, no web view, a ~5 MB download.
 
-Requires **macOS 14 (Sonoma)** or newer (Apple Silicon and Intel). On macOS 26 and later the window, sidebar, toolbar and icon use Liquid Glass; on macOS 14 and 15 Marka uses the classic translucent materials.
+[**⬇ Download Marka for macOS**](https://github.com/lubino/marka/releases/latest) · macOS 14 Sonoma or newer · Apple Silicon and Intel · MIT license
 
-![preview](assets/preview.png)
+![Marka editing a Markdown document on A4 pages](assets/preview.png)
+
+## Why Marka
+
+- **WYSIWYG Markdown.** Formatting markers stay hidden while you write; `⌘/` shows the raw source any time.
+- **Your file stays yours.** Saving never rewrites lines you did not touch, and an unedited file stays byte-for-byte identical — clean diffs in Git.
+- **Pages you can print.** Live A4 pages with page breaks, thumbnails and page numbers; PDF export and print match the screen exactly, links included.
+- **Math and diagrams without a browser.** LaTeX math (`$…$`, `$$…$$`) and Mermaid flowcharts, sequence diagrams and pie charts, typeset natively.
+- **Tables that feel like Pages.** GitHub-style tables with in-place editing, drag-to-reorder rows and columns, and one-click insert or delete.
+- **A real Mac app.** Tabs, Liquid Glass on macOS 26, dark mode, the system share sheet, find and replace, and syntax-highlighted code in a ~5 MB app.
+
+Looking for a **Typora alternative**, a native **Obsidian**-style editor for single files, or a modern successor to **MacDown**? Marka is free, open source and native.
+
+On macOS 26 and later the window, sidebar, toolbar and icon use Liquid Glass; on macOS 14 and 15 Marka uses the classic translucent materials.
+
 ## Install
 
 ### 1. One-line installer (recommended)
@@ -123,7 +137,7 @@ The saved file is ordinary UTF-8 GitHub-Flavored Markdown. Opening and saving wi
 | Zoom in / out / actual size   | `⌘+` / `⌘-` / `⌘0`                        |
 | Export PDF / Print            | `⇧⌘E` / `⌘P`                              |
 | Settings                      | `⌘,`                                      |
-| Table rows and columns        | Format → Table, or the bar under a table  |
+| Table rows and columns        | Format → Table, or the grips in a table   |
 
 ## License
 
