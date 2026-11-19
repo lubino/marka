@@ -57,6 +57,9 @@ enum MarkaTests {
         let a4 = PageGeometry()
         expect(abs(a4.paperSize.width - 595.275) < 0.1, "A4 width in points")
         expect(abs(a4.paperSize.height - 841.89) < 0.1, "A4 height in points")
+        expect(a4.interPageGap <= 12, "Preview-like page gap, got \(a4.interPageGap)")
+        expectEqual(EditorSettings.default.fontName, "Times New Roman", "default body font matches Preview documents")
+        expect(EditorSettings.default.fontSize <= 10, "default body size is 10pt or smaller")
         let exclusions = PageLayout.exclusionRects(pageCount: 3, geometry: a4, containerWidth: a4.contentSize.width)
         expectEqual(exclusions.count, 2, "two holes for three pages")
         expect(exclusions[0].width == a4.contentSize.width, "exclusion width")
@@ -86,7 +89,7 @@ enum MarkaTests {
                 width: page0.width,
                 height: page1.minY - page0.maxY
             )
-            expect(gap.height > 10, "pages have a gutter")
+            expect(gap.height > 8, "pages have a gutter")
             for piece in pieces {
                 let overlap = piece.intersection(gap)
                 expect(overlap.isNull || overlap.height < 0.5, "piece stays off the page gutter")
@@ -480,6 +483,170 @@ enum MarkaTests {
             try? FileManager.default.removeItem(at: file)
         } catch {
             expect(false, "shell command file: \(error)")
+        }
+
+        let statsSource = """
+        # Title
+
+        First paragraph with a [link](https://a.b) and ![pic](assets/p.png).
+        Still the first paragraph.
+
+        Second paragraph.
+
+        ```swift
+        # not a heading
+        [not](a-link)
+        ```
+
+        | A | B |
+        | --- | --- |
+        | 1 | 2 |
+
+        - [x] done
+        - [ ] open
+
+        ---
+
+        ## Sub
+        """
+        let stats = DocumentStats.compute(statsSource)
+        expect(stats.headings == 2, "stats headings, got \(stats.headings)")
+        expect(stats.paragraphs == 2, "stats paragraphs, got \(stats.paragraphs)")
+        expect(stats.links == 1, "stats links skip images and fenced code, got \(stats.links)")
+        expect(stats.images == 1, "stats images, got \(stats.images)")
+        expect(stats.codeBlocks == 1, "stats code blocks, got \(stats.codeBlocks)")
+        expect(stats.tables == 1, "stats tables, got \(stats.tables)")
+        expect(stats.tasks == 2 && stats.completedTasks == 1, "stats tasks \(stats.completedTasks)/\(stats.tasks)")
+        expect(stats.lines == 22, "stats lines, got \(stats.lines)")
+        expect(stats.charactersWithoutSpaces < stats.characters, "no-space count is smaller")
+        expect(DocumentStats.compute("").readingMinutes == 0, "empty doc reads in 0 min")
+        expect(DocumentStats.compute("word").readingMinutes == 1, "short doc reads in 1 min")
+        let long = Array(repeating: "word", count: 461).joined(separator: " ")
+        expect(DocumentStats.compute(long).readingMinutes == 3, "461 words ≈ 3 min")
+
+        // Table row / column moves
+        let grid = "| A | B | C |\n| --- | :-: | --: |\n| a1 | b1 | c1 |\n| a2 | b2 | c2 |\n| a3 | b3 | c3 |"
+        if let a3 = TableMutator.cell(at: (grid as NSString).range(of: "a3").location, in: grid),
+           let moved = TableMutator.moveRow(source: grid, cell: a3, to: 2) {
+            let lines = moved.text.components(separatedBy: "\n")
+            expect(lines[2].contains("a3") && lines[3].contains("a1") && lines[4].contains("a2"), "row a3 moves to the top of the body, got \(lines)")
+            expect((moved.text as NSString).substring(with: moved.selected).contains("a3"), "caret follows the moved row")
+            expect(TableMutator.moveRow(source: grid, cell: a3, to: 0)?.text.components(separatedBy: "\n")[0].contains("A") == true, "the header never moves")
+        } else {
+            expect(false, "moveRow should apply")
+        }
+        if let b1 = TableMutator.cell(at: (grid as NSString).range(of: "b1").location, in: grid),
+           let moved = TableMutator.moveColumn(source: grid, cell: b1, to: 2) {
+            let lines = moved.text.components(separatedBy: "\n")
+            let header = lines[0].split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            expect(header == ["A", "C", "B"], "column B moves to the end, got \(header)")
+            let row = lines[2].split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            expect(row == ["a1", "c1", "b1"], "cells move with their column, got \(row)")
+            let delimiter = lines[1].split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            expect(delimiter.count == 3 && delimiter[1].hasSuffix(":") && !delimiter[1].hasPrefix(":") && delimiter[2].hasPrefix(":") && delimiter[2].hasSuffix(":"), "alignment moves with its column, got \(delimiter)")
+        } else {
+            expect(false, "moveColumn should apply")
+        }
+
+        // Find & replace
+        let hay = "Marka marks MARKA; remark marka_x Marka"
+        expect(FindEngine.matches(of: "marka", in: hay).count == 4, "case-insensitive finds Marka, MARKA, marka (in marka_x) and Marka")
+        expect(FindEngine.matches(of: "Marka", in: hay, options: .init(caseSensitive: true)).count == 2, "match case")
+        expect(FindEngine.matches(of: "marka", in: hay, options: .init(wholeWord: true)).count == 3, "whole words skip marka_x and remark")
+        expect(FindEngine.matches(of: "", in: hay).isEmpty, "empty query finds nothing")
+        let found = FindEngine.matches(of: "marka", in: hay)
+        expect(FindEngine.nextIndex(in: found, after: 1) == 1, "next match after the caret")
+        expect(FindEngine.nextIndex(in: found, after: 1000) == 0, "next wraps to the first")
+        expect(FindEngine.nextIndex(in: found, after: 0, backwards: true) == found.count - 1, "previous wraps to the last")
+        let replaced = FindEngine.replaceAll("Marka", with: "Marka 2", in: hay, options: .init(caseSensitive: true, wholeWord: true))
+        expect(replaced.count == 2 && replaced.text == "Marka 2 marks MARKA; remark marka_x Marka 2", "replace all, got \(replaced.text)")
+        let grow = FindEngine.replaceAll("a", with: "aa", in: "a-a")
+        expect(grow.text == "aa-aa" && grow.count == 2, "replacement containing the query does not loop")
+
+        // Combined inline Markdown — spans as "text|kind|role" strings
+        func inlineSpans(_ source: String) -> Set<String> {
+            var out = Set<String>()
+            for span in MarkdownSyntax.spans(in: source) {
+                let text = (source as NSString).substring(with: span.range)
+                var kind = String(describing: span.kind)
+                if let paren = kind.firstIndex(of: "(") { kind = String(kind[..<paren]) }
+                out.insert("\(text)|\(kind)|\(span.role)")
+            }
+            return out
+        }
+        let boldLink = inlineSpans("**[readme](README.md)**")
+        expect(boldLink.contains("**|strong|marker"), "bold wraps a link: ** markers, got \(boldLink)")
+        expect(boldLink.contains("readme|link|content"), "link inside bold keeps its label")
+        let boldCode = inlineSpans("Get **`Marka.dmg`** now")
+        expect(boldCode.contains("`Marka.dmg`|strong|content"), "bold wraps inline code, got \(boldCode)")
+        expect(boldCode.contains("Marka.dmg|inlineCode|content"), "inline code inside bold")
+        let italicCode = inlineSpans("*`Marka.dmg`*")
+        expect(italicCode.contains("`Marka.dmg`|emphasis|content"), "italic wraps inline code, got \(italicCode)")
+        let snake = inlineSpans("`my_var_name` and `a*b*c`")
+        expect(!snake.contains { $0.contains("|emphasis|") }, "_ and * inside inline code never become emphasis")
+
+        // Syntax highlighting
+        func hl(_ code: String, _ info: String) -> [String: SyntaxHighlighter.Kind] {
+            var map: [String: SyntaxHighlighter.Kind] = [:]
+            for t in SyntaxHighlighter.tokens(in: code, info: info) {
+                map[(code as NSString).substring(with: t.range)] = t.kind
+            }
+            return map
+        }
+        expect(SyntaxHighlighter.language(for: "C++") == .cpp, "c++ fence maps to cpp")
+        expect(SyntaxHighlighter.language(for: "yml") == .yaml, "yml maps to yaml")
+        expect(SyntaxHighlighter.language(for: "py {.numberLines}") == .python, "info string attributes are ignored")
+        expect(SyntaxHighlighter.language(for: "brainfuck") == nil, "unknown language is not highlighted")
+        let bash = hl("# setup\nexport NAME=\"$HOME/x\"\nif [ -f a ]; then echo ok; fi", "bash")
+        expect(bash["# setup"] == .comment, "bash comment")
+        expect(bash["export"] == .keyword && bash["if"] == .keyword && bash["fi"] == .keyword, "bash keywords")
+        expect(bash["$HOME"] == .variable, "bash variable inside a string")
+        expect(bash["echo"] == .function, "bash builtin command")
+        let json = hl("{\"name\": \"Marka\", \"n\": -1.5e3, \"ok\": true, \"x\": null}", "json")
+        expect(json["\"name\""] == .property && json["\"Marka\""] == .string, "json key vs string")
+        expect(json["-1.5e3"] == .number && json["true"] == .constant && json["null"] == .constant, "json number and literals")
+        let py = hl("@cache\ndef f(x: int) -> str:\n    return \"\"\"doc\"\"\"  # done\nprint(None)", "python")
+        expect(py["@cache"] == .meta && py["def"] == .keyword && py["int"] == .type, "python decorator, keyword, type")
+        expect(py["\"\"\"doc\"\"\""] == .string && py["# done"] == .comment && py["None"] == .constant, "python string, comment, None")
+        expect(py["print"] == .function, "python builtin call")
+        let js = hl("const x = `t ${1}`; // c\nfunction go() { return new Map(); }", "js")
+        expect(js["const"] == .keyword && js["// c"] == .comment && js["`t ${1}`"] == .string, "js keyword, comment, template")
+        expect(js["go"] == .function && js["Map"] == .type, "js call and constructor type")
+        let cpp = hl("#include <vector>\nstd::vector<int> v; /* x */ auto n = nullptr;", "c++")
+        expect(cpp["#include"] == .meta && cpp["int"] == .type && cpp["/* x */"] == .comment && cpp["nullptr"] == .constant, "c++ tokens")
+        let swift = hl("@MainActor struct A { let n = 0x1F; func f() -> String? { nil } }", "swift")
+        expect(swift["@MainActor"] == .meta && swift["struct"] == .keyword && swift["0x1F"] == .number, "swift attribute, keyword, hex")
+        expect(swift["String"] == .type && swift["nil"] == .constant && swift["A"] == .type, "swift types and nil")
+        let html = hl("<!-- c --><a href=\"/x\" class='y'>Tom &amp; Jerry</a>", "html")
+        expect(html["<!-- c -->"] == .comment && html["a"] == .tag && html["href"] == .attribute, "html comment, tag, attribute")
+        expect(html["\"/x\""] == .string && html["&amp;"] == .constant, "html attribute value and entity")
+        let xml = hl("<?xml version=\"1.0\"?><plist><key>A</key></plist>", "xml")
+        expect(xml["<?xml version=\"1.0\"?>"] == .meta && xml["plist"] == .tag, "xml declaration and tag")
+        let css = hl("/* c */ .btn:hover { color: #fff; margin: 4px 0; width: calc(100% - 2px) !important; }", "css")
+        expect(css["/* c */"] == .comment && css[".btn"] == .attribute && css[":hover"] == .keyword, "css comment, class, pseudo")
+        expect(css["color"] == .property && css["#fff"] == .constant && css["4px"] == .number, "css property, colour, length")
+        expect(css["calc"] == .function && css["!important"] == .keyword, "css function and !important")
+        let yaml = hl("---\nname: Marka # app\nport: 8080\nenabled: true\nlist:\n  - \"x\"\nref: *base", "yaml")
+        expect(yaml["---"] == .meta && yaml["name"] == .property && yaml["# app"] == .comment, "yaml document, key, comment")
+        expect(yaml["8080"] == .number && yaml["true"] == .constant && yaml["\"x\""] == .string && yaml["*base"] == .variable, "yaml values")
+        let sql = hl("SELECT id, count(*) FROM users WHERE name = 'a' -- q", "sql")
+        expect(sql["SELECT"] == .keyword && sql["FROM"] == .keyword && sql["'a'"] == .string && sql["-- q"] == .comment, "sql tokens (case-insensitive)")
+        let go = hl("package main\nfunc main() { var s string = \"x\" }", "go")
+        expect(go["package"] == .keyword && go["string"] == .type && go["main"] != nil, "go tokens")
+        let samples: [(String, String)] = [
+            ("echo \"$A ${B}\" $1 'c' # d", "bash"), ("{\"a\": [1, {\"b\": \"c\"}]}", "json"),
+            ("x = '''a\nb''' # c", "python"), ("<a b=\"c\"><!-- d --></a>", "html"), ("a { b: c; } /* d */", "css"),
+            ("k: v # c\n- \"q\"", "yaml"), ("fn main() { let s = \"x\"; } // c", "rust"), ("unterminated \"string", "swift")
+        ]
+        for (code, info) in samples {
+            let tokens = SyntaxHighlighter.tokens(in: code, info: info).sorted { $0.range.location < $1.range.location }
+            var end = 0
+            var ok = true
+            for t in tokens {
+                if t.range.location < end || NSMaxRange(t.range) > (code as NSString).length || t.range.length == 0 { ok = false }
+                end = NSMaxRange(t.range)
+            }
+            expect(ok, "\(info) tokens are non-overlapping and in range")
         }
 
         if failed > 0 {

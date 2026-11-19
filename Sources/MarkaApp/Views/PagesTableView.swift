@@ -10,35 +10,42 @@ protocol PagesTableDelegate: AnyObject {
     func pagesTableDeleteColumn(_ view: PagesTableView)
     func pagesTableDeleteTable(_ view: PagesTableView)
     func pagesTableDidChangeFocus(_ view: PagesTableView)
+    func pagesTable(_ view: PagesTableView, moveRow from: Int, to: Int)
+    func pagesTable(_ view: PagesTableView, moveColumn from: Int, to: Int)
 }
 
 /// Pages-style Markdown table: native grid, row/column headers, one slice per page.
+/// A GFM table drawn the way GitHub renders it: bold header, 1 px grid, striped rows. No editing
+/// chrome on the table itself (no column letters, row numbers, or +/− chips) — row and column
+/// commands live in Format → Table and the cell's context menu and act on the focused cell.
+/// Cells stay editable in place; Tab / Return move between them.
 final class PagesTableView: NSView, NSTextFieldDelegate {
-    enum Axis { case cell, row, column, table }
-
     weak var tableDelegate: PagesTableDelegate?
     private(set) var block: TableMutator.Block
     private(set) var selectedRow = 0
     private(set) var selectedColumn = 0
-    private(set) var axis: Axis = .cell
     var darkPaper = false
 
     static let rowHeight: CGFloat = 28
-    static let headerBar: CGFloat = 18
-    static let rowBar: CGFloat = 22
-    static let insertSize: CGFloat = 16
-    static let cellPadX: CGFloat = 10
-    static let minColumn: CGFloat = 64
-    static let topPad: CGFloat = headerBar
-    static let bottomPad: CGFloat = 18
+    static let headerBar: CGFloat = 0
+    static let rowBar: CGFloat = 0
+    static let cellPadX: CGFloat = 13
+    static let minColumn: CGFloat = 56
+    static let topPad: CGFloat = 0
+    static let bottomPad: CGFloat = 12
     static let edgeInset: CGFloat = topPad
 
     private var flow: PageLayout.TableFlow?
     private var slices: [TableSliceView] = []
     private var columnWidths: [CGFloat] = []
-    private let addRowButton = PagesInsertButton()
-    private let addColumnButton = PagesInsertButton()
-    private let deleteButton = PagesInsertButton(kind: .remove)
+
+    // Editing chrome: only while the cursor is in one of this table's cells.
+    let editBar = TableEditBar(frame: NSRect(x: 0, y: 0, width: TableEditBar.width, height: TableEditBar.height))
+    let rowGrip = TableGripView(axis: .row)
+    let columnGrip = TableGripView(axis: .column)
+    private let dropIndicator = NSView()
+    private(set) var isEditingChromeVisible = false
+    private var chromeViews: [NSView] { [editBar, rowGrip, columnGrip, dropIndicator] }
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -63,19 +70,16 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
         wantsLayer = true
         clipsToBounds = false
         layer?.backgroundColor = NSColor.clear.cgColor
-        addRowButton.toolTip = "Add row"
-        addRowButton.target = self
-        addRowButton.action = #selector(rowBelow)
-        addColumnButton.toolTip = "Add column"
-        addColumnButton.target = self
-        addColumnButton.action = #selector(colRight)
-        deleteButton.kind = .remove
-        deleteButton.toolTip = "Delete"
-        deleteButton.target = self
-        deleteButton.action = #selector(deleteSelection)
-        addSubview(addRowButton)
-        addSubview(addColumnButton)
-        addSubview(deleteButton)
+        editBar.onCommand = { [weak self] command in self?.perform(command) }
+        rowGrip.onDrag = { [weak self] phase, point in self?.dragRow(phase, point) }
+        columnGrip.onDrag = { [weak self] phase, point in self?.dragColumn(phase, point) }
+        dropIndicator.wantsLayer = true
+        dropIndicator.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        dropIndicator.layer?.cornerRadius = 1
+        for view in chromeViews {
+            view.isHidden = true
+            addSubview(view)
+        }
         rebuild()
     }
 
@@ -159,7 +163,7 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
         }
         while slices.count < pageSlices.count {
             let slice = TableSliceView(parent: self)
-            addSubview(slice, positioned: .below, relativeTo: addRowButton)
+            addSubview(slice, positioned: .below, relativeTo: editBar)
             slices.append(slice)
         }
         let startY = flow?.startY ?? 0
@@ -212,85 +216,207 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
             slice.rebuildFieldsIfNeeded()
             slice.layoutFields()
         }
-        layoutChrome()
+        layoutEditChrome()
     }
 
-    private func layoutChrome() {
-        let rail = Self.insertSize
-        let last = slices.last
-        let first = slices.first
-        addColumnButton.darkPaper = darkPaper
-        addRowButton.darkPaper = darkPaper
-        deleteButton.darkPaper = darkPaper
-        if let first {
-            addColumnButton.frame = CGRect(
-                x: bounds.width - rail - 2,
-                y: first.frame.minY + max(1, (Self.headerBar - rail) / 2),
-                width: rail,
-                height: rail
-            )
+    // MARK: - Editing chrome
+
+    func setEditingChrome(_ visible: Bool) {
+        guard visible != isEditingChromeVisible else {
+            if visible { layoutEditChrome() }
+            return
         }
-        if let last {
-            addRowButton.frame = CGRect(
-                x: max(2, (Self.rowBar - rail) / 2),
-                y: last.frame.maxY - Self.bottomPad + max(1, (Self.bottomPad - rail) / 2),
-                width: rail,
-                height: rail
-            )
-        }
-        positionDeleteButton(rail: rail)
-        addSubview(addRowButton, positioned: .above, relativeTo: nil)
-        addSubview(addColumnButton, positioned: .above, relativeTo: nil)
-        addSubview(deleteButton, positioned: .above, relativeTo: nil)
+        isEditingChromeVisible = visible
+        editBar.isHidden = !visible
+        rowGrip.isHidden = !visible
+        columnGrip.isHidden = !visible
+        dropIndicator.isHidden = true
+        if visible { layoutEditChrome() }
     }
 
-    private func positionDeleteButton(rail: CGFloat) {
-        switch axis {
-        case .row:
-            guard let y = primaryY(for: selectedRow) else {
-                deleteButton.isHidden = true
-                return
+    private var tableWidth: CGFloat { max(8, columnWidths.reduce(0, +)) }
+
+    private func columnX(_ column: Int) -> CGFloat {
+        columnWidths.prefix(max(0, column)).reduce(0, +)
+    }
+
+    /// The slice (page piece) that shows `storageRow`.
+    private func slice(showing storageRow: Int) -> TableSliceView? {
+        slices.first { $0.spec.rows.contains { $0.storageRow == storageRow && !$0.isRepeatedHeader } } ?? slices.first
+    }
+
+    private func layoutEditChrome() {
+        guard isEditingChromeVisible, let last = slices.last else { return }
+        // Bar: floating under the table, right-aligned.
+        editBar.frame = CGRect(
+            x: max(0, tableWidth - TableEditBar.width),
+            y: last.frame.maxY - Self.bottomPad + 4,
+            width: TableEditBar.width,
+            height: TableEditBar.height
+        )
+        // Row grip: in the left margin beside the focused row (body rows only — the header stays).
+        if selectedRow >= 2, let y = primaryY(for: selectedRow) {
+            rowGrip.isHidden = false
+            rowGrip.frame = CGRect(
+                x: -TableGripView.rowSize.width - 5,
+                y: y + (Self.rowHeight - TableGripView.rowSize.height) / 2,
+                width: TableGripView.rowSize.width,
+                height: TableGripView.rowSize.height
+            )
+        } else {
+            rowGrip.isHidden = true
+        }
+        // Column grip: above the focused column, on the page that shows the focused row.
+        if selectedColumn < columnWidths.count, let piece = slice(showing: selectedRow) {
+            columnGrip.isHidden = false
+            let w = columnWidths[selectedColumn]
+            columnGrip.frame = CGRect(
+                x: columnX(selectedColumn) + (w - TableGripView.columnSize.width) / 2,
+                y: piece.frame.minY - TableGripView.columnSize.height - 3,
+                width: TableGripView.columnSize.width,
+                height: TableGripView.columnSize.height
+            )
+        } else {
+            columnGrip.isHidden = true
+        }
+        for view in chromeViews { addSubview(view, positioned: .above, relativeTo: nil) }
+    }
+
+    private func perform(_ command: TableEditBar.Command) {
+        commitPendingEdit()
+        switch command {
+        case .rowAbove: tableDelegate?.pagesTable(self, insertRow: .above)
+        case .rowBelow: tableDelegate?.pagesTable(self, insertRow: .below)
+        case .columnLeft: tableDelegate?.pagesTable(self, insertColumn: .left)
+        case .columnRight: tableDelegate?.pagesTable(self, insertColumn: .right)
+        case .deleteRow: tableDelegate?.pagesTableDeleteRow(self)
+        case .deleteColumn: tableDelegate?.pagesTableDeleteColumn(self)
+        }
+    }
+
+    /// Drop target for a row drag at `y`: insertion boundary (storage index the row goes before)
+    /// and the moved row's final index.
+    func rowDrop(atY y: CGFloat) -> (boundary: Int, target: Int, lineY: CGFloat) {
+        let body = Array(2..<max(2, block.rows.count))
+        var boundary = block.rows.count
+        var lineY = (primaryY(for: body.last ?? 0) ?? 0) + Self.rowHeight
+        for row in body {
+            if let rowY = primaryY(for: row), y < rowY + Self.rowHeight / 2 {
+                boundary = row
+                lineY = rowY
+                break
             }
-            deleteButton.toolTip = (selectedRow <= 1 || block.dataRowCount <= 1) ? "Delete table" : "Delete row"
-            deleteButton.frame = CGRect(
-                x: max(2, (Self.rowBar - rail) / 2),
-                y: y + max(1, (Self.rowHeight - rail) / 2),
-                width: rail,
-                height: rail
-            )
-            deleteButton.isHidden = false
-        case .column:
-            var x = Self.rowBar
-            for i in 0..<selectedColumn where i < columnWidths.count {
-                x += columnWidths[i]
+        }
+        let target = boundary > selectedRow ? boundary - 1 : boundary
+        return (boundary, target, lineY)
+    }
+
+    func columnDrop(atX x: CGFloat) -> (target: Int, lineX: CGFloat) {
+        var boundary = columnWidths.count
+        var lineX = tableWidth
+        var cursor: CGFloat = 0
+        for (index, w) in columnWidths.enumerated() {
+            if x < cursor + w / 2 {
+                boundary = index
+                lineX = cursor
+                break
             }
-            let w = selectedColumn < columnWidths.count ? columnWidths[selectedColumn] : Self.minColumn
-            let selectedY = primaryY(for: selectedRow)
-            let barY = slices.first(where: { slice in
-                guard let selectedY else { return false }
-                return selectedY >= slice.frame.minY && selectedY <= slice.frame.maxY
-            })?.frame.minY ?? slices.first?.frame.minY ?? 0
-            deleteButton.toolTip = block.columnCount <= 1 ? "Delete table" : "Delete column"
-            deleteButton.frame = CGRect(
-                x: x + max(1, (w - rail) / 2),
-                y: barY + max(1, (Self.headerBar - rail) / 2),
-                width: rail,
-                height: rail
-            )
-            deleteButton.isHidden = false
-        case .table:
-            deleteButton.toolTip = "Delete table"
-            deleteButton.frame = CGRect(x: 2, y: (slices.first?.frame.minY ?? 0) + 1, width: rail, height: rail)
-            deleteButton.isHidden = false
-        case .cell:
-            deleteButton.isHidden = true
+            cursor += w
+        }
+        let target = boundary > selectedColumn ? boundary - 1 : boundary
+        return (target, lineX)
+    }
+
+    private func dragRow(_ phase: NSEvent.Phase, _ point: CGPoint) {
+        let drop = rowDrop(atY: point.y)
+        switch phase {
+        case .ended:
+            dropIndicator.isHidden = true
+            if drop.target != selectedRow {
+                commitPendingEdit()
+                tableDelegate?.pagesTable(self, moveRow: selectedRow, to: drop.target)
+            }
+        default:
+            dropIndicator.isHidden = false
+            dropIndicator.frame = CGRect(x: 0, y: drop.lineY - 1, width: tableWidth, height: 2)
+            rowGrip.frame.origin.y = point.y - rowGrip.frame.height / 2
         }
     }
 
+    private func dragColumn(_ phase: NSEvent.Phase, _ point: CGPoint) {
+        let drop = columnDrop(atX: point.x)
+        switch phase {
+        case .ended:
+            dropIndicator.isHidden = true
+            if drop.target != selectedColumn {
+                commitPendingEdit()
+                tableDelegate?.pagesTable(self, moveColumn: selectedColumn, to: drop.target)
+            }
+        default:
+            let piece = slice(showing: selectedRow)
+            dropIndicator.isHidden = false
+            dropIndicator.frame = CGRect(x: drop.lineX - 1, y: piece?.frame.minY ?? 0, width: 2, height: piece?.frame.height ?? bounds.height)
+            columnGrip.frame.origin.x = point.x - columnGrip.frame.width / 2
+        }
+    }
+
+    /// Chrome (bar, grips) sits partly outside the table's frame; hit-test it first.
+    func editChromeHit(_ point: NSPoint) -> NSView? {
+        guard isEditingChromeVisible else { return nil }
+        let local = convert(point, from: superview)
+        if !editBar.isHidden, editBar.frame.contains(local) { return editBar.hitTest(local) }
+        for grip in [rowGrip, columnGrip] where !grip.isHidden && grip.frame.contains(local) { return grip }
+        return nil
+    }
+
+    // Testing: simulate grip drags exactly as mouse events would report them.
+    func testDragRow(beforeStorageRow target: Int) {
+        guard let y = target < block.rows.count ? primaryY(for: target) : (primaryY(for: block.rows.count - 1)).map({ $0 + Self.rowHeight + 2 }) else { return }
+        let start = CGPoint(x: rowGrip.frame.midX, y: rowGrip.frame.midY)
+        dragRow(.began, start)
+        dragRow(.changed, CGPoint(x: start.x, y: y + 2))
+        dragRow(.ended, CGPoint(x: start.x, y: y + 2))
+    }
+
+    func testDragColumn(beforeColumn target: Int) {
+        let x = target < columnWidths.count ? columnX(target) + 2 : tableWidth - 1
+        let start = CGPoint(x: columnGrip.frame.midX, y: columnGrip.frame.midY)
+        dragColumn(.began, start)
+        dragColumn(.changed, CGPoint(x: x, y: start.y))
+        dragColumn(.ended, CGPoint(x: x, y: start.y))
+    }
+
+    /// The canvas hit-tests the bar's "Insert Row Below" button (it hangs below the table).
+    func testBarButtonHit(in canvas: NSView) -> Bool {
+        guard let button = editBar.buttons[.rowBelow] else { return false }
+        let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: canvas)
+        return canvas.hitTest(point) === button
+    }
+
+    var testGripsVisible: (row: Bool, column: Bool) { (!rowGrip.isHidden, !columnGrip.isHidden) }
+
+    /// (shown text, bold?) of a cell field — rendered unless the cell is being edited.
+    func testCellDisplay(row: Int, column: Int) -> (text: String, bold: Bool)? {
+        layoutSubtreeIfNeeded()
+        for slice in slices {
+            if let field = slice.field(row: row, column: column) {
+                let shown = field.attributedStringValue
+                let font = shown.length > 0 ? shown.attribute(.font, at: 0, effectiveRange: nil) as? NSFont : nil
+                return (field.stringValue, font?.fontDescriptor.symbolicTraits.contains(.bold) ?? false)
+            }
+        }
+        return nil
+    }
+
+    func editChromeContains(windowPoint: NSPoint) -> Bool {
+        guard isEditingChromeVisible, let superview else { return false }
+        return editChromeHit(superview.convert(windowPoint, from: nil)) != nil
+    }
+
+    /// Top of `storageRow` in table coordinates (its own page slice, not a repeated header).
     private func primaryY(for storageRow: Int) -> CGFloat? {
         for slice in slices {
-            if let row = slice.spec.rows.first(where: { $0.storageRow == storageRow && !$0.isRepeatedHeader })
-                ?? slice.spec.rows.first(where: { $0.storageRow == storageRow }) {
+            if let row = slice.spec.rows.first(where: { $0.storageRow == storageRow && !$0.isRepeatedHeader }) {
                 return slice.frame.minY + (row.y - slice.spec.y)
             }
         }
@@ -302,49 +428,26 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard !isHidden, frame.contains(point) else { return nil }
-        let local = convert(point, from: superview)
-        for handle in [deleteButton, addRowButton, addColumnButton] where !handle.isHidden {
-            if handle.frame.contains(local) { return handle }
-        }
+        guard !isHidden else { return nil }
+        if let chrome = editChromeHit(point) { return chrome }
+        guard frame.contains(point) else { return nil }
         return super.hitTest(point) ?? self
     }
 
+    /// A click between cells (on a border) still edits the nearest cell.
     override func mouseDown(with event: NSEvent) {
         let local = convert(event.locationInWindow, from: nil)
-        if let slice = slices.first(where: { $0.frame.contains(local) }) {
-            let inSlice = CGPoint(x: local.x, y: local.y - slice.frame.minY)
-            if inSlice.y < Self.headerBar, inSlice.x >= Self.rowBar, let column = columnIndex(atX: inSlice.x) {
-                selectColumn(column)
-                window?.makeFirstResponder(self)
-                return
-            }
-            if inSlice.x < Self.rowBar, let row = slice.storageRow(atY: inSlice.y) {
-                selectRow(row)
-                window?.makeFirstResponder(self)
-                return
-            }
-            if inSlice.x < Self.rowBar, inSlice.y < Self.headerBar {
-                selectTable()
-                window?.makeFirstResponder(self)
-                return
-            }
+        if let slice = slices.first(where: { $0.frame.contains(local) }),
+           let row = slice.storageRow(atY: local.y - slice.frame.minY),
+           let column = columnIndex(atX: local.x) {
+            focusCell(row: row, column: column)
+            return
         }
         super.mouseDown(with: event)
     }
 
-    override func keyDown(with event: NSEvent) {
-        let deleteKeys: Set<UInt16> = [51, 117]
-        if deleteKeys.contains(event.keyCode), axis != .cell {
-            deleteSelection()
-            return
-        }
-        super.keyDown(with: event)
-    }
-
     private func columnIndex(atX x: CGFloat) -> Int? {
-        guard x >= Self.rowBar else { return nil }
-        var cursor = Self.rowBar
+        var cursor: CGFloat = 0
         for (index, width) in columnWidths.enumerated() {
             if x <= cursor + width { return index }
             cursor += width
@@ -352,33 +455,7 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
         return columnWidths.isEmpty ? 0 : columnWidths.count - 1
     }
 
-    func selectRow(_ row: Int) {
-        axis = .row
-        selectedRow = row == 1 ? 0 : row
-        needsLayout = true
-        needsDisplay = true
-        slices.forEach { $0.needsDisplay = true }
-        tableDelegate?.pagesTableDidChangeFocus(self)
-    }
-
-    func selectColumn(_ column: Int) {
-        axis = .column
-        selectedColumn = max(0, column)
-        needsLayout = true
-        needsDisplay = true
-        slices.forEach { $0.needsDisplay = true }
-        tableDelegate?.pagesTableDidChangeFocus(self)
-    }
-
-    func selectTable() {
-        axis = .table
-        needsLayout = true
-        needsDisplay = true
-        tableDelegate?.pagesTableDidChangeFocus(self)
-    }
-
     func focusCell(row: Int, column: Int, stealFocus: Bool = true) {
-        axis = .cell
         selectedRow = row
         selectedColumn = column
         if stealFocus {
@@ -386,25 +463,17 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
                 if slice.focusField(row: row, column: column) { break }
             }
         }
+        setEditingChrome(true)
         needsLayout = true
         needsDisplay = true
         slices.forEach { $0.needsDisplay = true }
     }
 
-    func addColumnChipHitTest(in canvas: NSView) -> Bool {
-        let point = addColumnButton.convert(
-            NSPoint(x: addColumnButton.bounds.midX, y: addColumnButton.bounds.midY),
-            to: canvas
-        )
-        return canvas.hitTest(point) === addColumnButton
-    }
-
-    func pagesChromeIsNative() -> Bool {
-        guard let first = slices.first, let last = slices.last else { return false }
-        let colOnHeader = addColumnButton.frame.maxY <= first.frame.minY + Self.headerBar + 1.5
-        let rowOnIndex = addRowButton.frame.maxX <= Self.rowBar + 1.5
-            && addRowButton.frame.minY >= last.frame.maxY - Self.bottomPad - 1
-        return colOnHeader && rowOnIndex && sliceCount >= 1
+    /// GitHub look: nothing but the page slices (which hold the cells) — no chips or handles — and
+    /// the grid starts at the content's left edge (no row-number gutter).
+    var hasOnlyGitHubGrid: Bool {
+        // The edit bar and grips appear only while a cell is being edited; nothing else is drawn.
+        subviews.allSatisfy { $0 is TableSliceView || chromeViews.contains($0) } && Self.rowBar == 0 && Self.headerBar == 0
     }
 
     func coversHiddenSource() -> Bool {
@@ -419,10 +488,6 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
     var storageColumnCount: Int { block.columnCount }
     var hasFieldFocus: Bool { containsResponder(window?.firstResponder) }
 
-    func clickAddRow() { rowBelow() }
-    func clickAddColumn() { colRight() }
-    func clickDeleteRow() { delRow() }
-    func clickDeleteColumn() { delCol() }
     func pressTab() {
         commitCurrent()
         moveSelection(columnDelta: 1, rowDelta: 0)
@@ -434,9 +499,9 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
 
     func controlTextDidBeginEditing(_ obj: Notification) {
         guard let field = obj.object as? NSTextField else { return }
-        axis = .cell
         selectedRow = field.tag / 1000
         selectedColumn = field.tag % 1000
+        setEditingChrome(true)
         needsLayout = true
         needsDisplay = true
         tableDelegate?.pagesTableDidChangeFocus(self)
@@ -444,7 +509,13 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
 
     func controlTextDidEndEditing(_ obj: Notification) {
         guard let field = obj.object as? NSTextField else { return }
-        tableDelegate?.pagesTable(self, commit: field.tag / 1000, column: field.tag % 1000, text: field.stringValue)
+        let source = (field as? MarkdownCellField)?.currentSource ?? field.stringValue
+        tableDelegate?.pagesTable(self, commit: field.tag / 1000, column: field.tag % 1000, text: source)
+        // Hide the chrome once focus has really left the table (Tab into the next cell keeps it).
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.hasFieldFocus else { return }
+            self.setEditingChrome(false)
+        }
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -466,10 +537,22 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
         return false
     }
 
+    /// Stop editing the focused cell without committing (its text was committed already).
+    func detachEditingField() {
+        slices.forEach { $0.detachEditingField() }
+    }
+
+    /// Write the focused cell's pending text before a structural edit changes the coordinates.
+    func commitPendingEdit() {
+        guard hasFieldFocus else { return }
+        commitCurrent()
+    }
+
     private func commitCurrent() {
         for slice in slices {
             if let field = slice.field(row: selectedRow, column: selectedColumn) {
-                tableDelegate?.pagesTable(self, commit: selectedRow, column: selectedColumn, text: field.stringValue)
+                let source = (field as? MarkdownCellField)?.currentSource ?? field.stringValue
+                tableDelegate?.pagesTable(self, commit: selectedRow, column: selectedColumn, text: source)
                 return
             }
         }
@@ -515,23 +598,13 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
         return menu
     }
 
-    @objc private func rowAbove() { tableDelegate?.pagesTable(self, insertRow: .above) }
-    @objc private func rowBelow() { tableDelegate?.pagesTable(self, insertRow: .below) }
-    @objc private func colLeft() { tableDelegate?.pagesTable(self, insertColumn: .left) }
-    @objc private func colRight() { tableDelegate?.pagesTable(self, insertColumn: .right) }
-    @objc private func delRow() { tableDelegate?.pagesTableDeleteRow(self) }
-    @objc private func delCol() { tableDelegate?.pagesTableDeleteColumn(self) }
+    @objc private func rowAbove() { commitPendingEdit(); tableDelegate?.pagesTable(self, insertRow: .above) }
+    @objc private func rowBelow() { commitPendingEdit(); tableDelegate?.pagesTable(self, insertRow: .below) }
+    @objc private func colLeft() { commitPendingEdit(); tableDelegate?.pagesTable(self, insertColumn: .left) }
+    @objc private func colRight() { commitPendingEdit(); tableDelegate?.pagesTable(self, insertColumn: .right) }
+    @objc private func delRow() { commitPendingEdit(); tableDelegate?.pagesTableDeleteRow(self) }
+    @objc private func delCol() { commitPendingEdit(); tableDelegate?.pagesTableDeleteColumn(self) }
     @objc private func delTable() { tableDelegate?.pagesTableDeleteTable(self) }
-    @objc private func deleteSelection() {
-        switch axis {
-        case .column:
-            delCol()
-        case .table:
-            delTable()
-        case .row, .cell:
-            delRow()
-        }
-    }
 
     func drawExported(intoPage paper: CGRect, paperOnCanvas: CGRect) {
         for slice in slices {
@@ -539,7 +612,6 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
         }
     }
 
-    fileprivate var currentAxis: Axis { axis }
     fileprivate var currentRow: Int { selectedRow }
     fileprivate var currentColumn: Int { selectedColumn }
     fileprivate var currentColumnWidths: [CGFloat] { columnWidths }
@@ -584,6 +656,13 @@ private final class TableSliceView: NSView {
         })?.storageRow
     }
 
+    func detachEditingField() {
+        for field in fields where field.currentEditor() != nil {
+            field.delegate = nil
+            field.abortEditing()
+        }
+    }
+
     func field(row: Int, column: Int) -> NSTextField? {
         fields.first { $0.tag == row * 1000 + column }
     }
@@ -601,13 +680,19 @@ private final class TableSliceView: NSView {
         let key = "\(block.range.location)-\(block.rows.count)-\(block.columnCount)-\(spec.page)-\(spec.rows.count)-\(cells)"
         if key == fieldKey { return }
         fieldKey = key
-        fields.forEach { $0.removeFromSuperview() }
+        // Old fields belong to the previous table shape: never let them commit their text into the
+        // new one (that wrote stale values into moved/inserted rows and columns).
+        for field in fields {
+            field.delegate = nil
+            field.abortEditing()
+            field.removeFromSuperview()
+        }
         fields = []
         let cols = max(1, block.columnCount)
         for row in spec.rows where !row.isRepeatedHeader {
             let display = row.storageRow == 0 ? 0 : row.storageRow - 1
             for c in 0..<cols {
-                let field = NSTextField()
+                let field = MarkdownCellField()
                 field.isBordered = false
                 field.drawsBackground = false
                 field.focusRingType = .none
@@ -622,7 +707,11 @@ private final class TableSliceView: NSView {
                 let value = row.storageRow < block.rows.count && c < block.rows[row.storageRow].count
                     ? block.rows[row.storageRow][c]
                     : ""
-                field.stringValue = value.trimmingCharacters(in: .whitespaces)
+                let cellFont = field.font ?? .systemFont(ofSize: 12)
+                let ink = Theme.bodyColor(darkPaper: darkPaper)
+                let dark = darkPaper
+                field.render = { CellMarkdown.attributed($0, font: cellFont, color: ink, darkPaper: dark) }
+                field.raw = value.trimmingCharacters(in: .whitespaces)
                 field.placeholderString = display == 0 ? "Header" : ""
                 addSubview(field)
                 fields.append(field)
@@ -631,7 +720,7 @@ private final class TableSliceView: NSView {
     }
 
     func layoutFields() {
-        let tableX = PagesTableView.rowBar
+        let tableX: CGFloat = 0
         for field in fields {
             let storage = field.tag / 1000
             let column = field.tag % 1000
@@ -656,117 +745,35 @@ private final class TableSliceView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         Theme.paperColor(darkPaper: darkPaper).setFill()
         bounds.fill()
-        guard let parent, let block else { return }
-        drawHeaders(parent: parent, block: block)
-        drawGrid(parent: parent, block: block)
+        guard let block else { return }
+        drawGrid(block: block)
         drawRepeatedHeaderText(block: block)
     }
 
-    private func drawHeaders(parent: PagesTableView, block: TableMutator.Block) {
-        Theme.tableGutterFill(darkPaper: darkPaper).setFill()
-        CGRect(x: 0, y: 0, width: bounds.width, height: PagesTableView.headerBar).fill()
-        CGRect(x: 0, y: 0, width: PagesTableView.rowBar, height: bounds.height).fill()
-        let font = NSFont.systemFont(ofSize: 10, weight: .medium)
-        let color = NSColor.secondaryLabelColor
-        var x = PagesTableView.rowBar
-        for c in 0..<max(1, block.columnCount) {
-            let w = c < columnWidths.count ? columnWidths[c] : PagesTableView.minColumn
-            let selected = parent.currentAxis == .column && parent.currentColumn == c
-            if selected {
-                NSColor.controlAccentColor.withAlphaComponent(0.22).setFill()
-                CGRect(x: x, y: 0, width: w, height: PagesTableView.headerBar).fill()
-            }
-            let letter = PageLayout.columnLetter(c) as NSString
-            letter.draw(
-                in: CGRect(x: x, y: 2, width: w, height: 14),
-                withAttributes: [
-                    .font: font,
-                    .foregroundColor: color,
-                    .paragraphStyle: centered()
-                ]
-            )
-            x += w
-        }
-        for row in spec.rows where !row.isRepeatedHeader {
+    /// GitHub: even data rows striped, 1 px border around every cell.
+    static func isStriped(_ storageRow: Int) -> Bool {
+        storageRow >= 2 && (storageRow - 1) % 2 == 0
+    }
+
+    private func drawGrid(block: TableMutator.Block) {
+        let tableW = max(8, columnWidths.reduce(0, +))
+        for row in spec.rows {
             let y = row.y - spec.y
-            let selected = parent.currentAxis == .row && parent.currentRow == row.storageRow
-            if selected {
-                NSColor.controlAccentColor.withAlphaComponent(0.22).setFill()
-                CGRect(x: 0, y: y, width: PagesTableView.rowBar, height: PagesTableView.rowHeight).fill()
-            }
-            let number = displayNumber(row.storageRow) as NSString
-            number.draw(
-                in: CGRect(x: 0, y: y + 6, width: PagesTableView.rowBar, height: 14),
-                withAttributes: [
-                    .font: font,
-                    .foregroundColor: color,
-                    .paragraphStyle: centered()
-                ]
-            )
-        }
-    }
-
-    private func displayNumber(_ storageRow: Int) -> String {
-        if storageRow == 0 { return "1" }
-        if storageRow >= 2 { return "\(storageRow)" }
-        return ""
-    }
-
-    private func centered() -> NSParagraphStyle {
-        let style = NSMutableParagraphStyle()
-        style.alignment = .center
-        return style
-    }
-
-    private func drawGrid(parent: PagesTableView, block: TableMutator.Block) {
-        let tableX = PagesTableView.rowBar
-        let tableW = max(8, bounds.width - PagesTableView.rowBar)
-        for (index, row) in spec.rows.enumerated() {
-            let y = row.y - spec.y
-            let rect = CGRect(x: tableX, y: y, width: tableW, height: PagesTableView.rowHeight)
-            if row.storageRow == 0 {
+            let rect = CGRect(x: 0, y: y, width: tableW, height: PagesTableView.rowHeight)
+            if Self.isStriped(row.storageRow) {
                 Theme.tableHeaderFill(darkPaper: darkPaper).setFill()
                 rect.fill()
             }
-            if parent.currentAxis == .cell,
-               row.storageRow == parent.currentRow,
-               !row.isRepeatedHeader,
-               parent.currentColumn < columnWidths.count {
-                var hx = tableX
-                for i in 0..<parent.currentColumn { hx += columnWidths[i] }
-                NSColor.controlAccentColor.withAlphaComponent(0.08).setFill()
-                CGRect(x: hx + 1, y: y + 1, width: columnWidths[parent.currentColumn] - 2, height: PagesTableView.rowHeight - 2).fill()
-            }
-            Theme.tableBorder(darkPaper: darkPaper).setStroke()
-            let line = NSBezierPath()
-            line.move(to: CGPoint(x: tableX, y: y + 0.5))
-            line.line(to: CGPoint(x: tableX + tableW, y: y + 0.5))
-            line.lineWidth = 1
-            line.stroke()
-            if index == spec.rows.count - 1 {
-                let bottom = NSBezierPath()
-                bottom.move(to: CGPoint(x: tableX, y: y + PagesTableView.rowHeight + 0.5))
-                bottom.line(to: CGPoint(x: tableX + tableW, y: y + PagesTableView.rowHeight + 0.5))
-                bottom.lineWidth = 1
-                bottom.stroke()
-            }
         }
-        var x = tableX
-        let firstY = (spec.rows.first?.y ?? spec.y) - spec.y
-        let lastY = (spec.rows.last?.y ?? spec.y) - spec.y + PagesTableView.rowHeight
-        for (i, w) in columnWidths.enumerated() {
-            let line = NSBezierPath()
-            line.move(to: CGPoint(x: x + 0.5, y: firstY))
-            line.line(to: CGPoint(x: x + 0.5, y: lastY))
-            line.lineWidth = 1
-            Theme.tableBorder(darkPaper: darkPaper).setStroke()
-            line.stroke()
-            x += w
-            if i == columnWidths.count - 1 {
-                let edge = NSBezierPath()
-                edge.move(to: CGPoint(x: x + 0.5, y: firstY))
-                edge.line(to: CGPoint(x: x + 0.5, y: lastY))
-                edge.stroke()
+        Theme.tableBorder(darkPaper: darkPaper).setStroke()
+        for row in spec.rows {
+            let y = row.y - spec.y
+            var x: CGFloat = 0
+            for w in columnWidths {
+                let cell = NSBezierPath(rect: CGRect(x: x + 0.5, y: y + 0.5, width: w - 1, height: PagesTableView.rowHeight))
+                cell.lineWidth = 1
+                cell.stroke()
+                x += w
             }
         }
     }
@@ -774,18 +781,15 @@ private final class TableSliceView: NSView {
     private func drawRepeatedHeaderText(block: TableMutator.Block) {
         let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         for row in spec.rows where row.isRepeatedHeader {
-            var x = PagesTableView.rowBar
+            var x: CGFloat = 0
             for c in 0..<max(1, block.columnCount) {
                 let w = c < columnWidths.count ? columnWidths[c] : PagesTableView.minColumn
                 let raw = c < (block.rows.first?.count ?? 0) ? block.rows[0][c] : ""
-                let text = raw.trimmingCharacters(in: .whitespaces) as NSString
+                let text = CellMarkdown.attributed(raw, font: font, color: Theme.bodyColor(darkPaper: darkPaper), darkPaper: darkPaper)
                 if text.length > 0 {
                     text.draw(
-                        in: CGRect(x: x + PagesTableView.cellPadX, y: row.y - spec.y + 6, width: max(8, w - PagesTableView.cellPadX * 2), height: 16),
-                        withAttributes: [
-                            .font: font,
-                            .foregroundColor: Theme.bodyColor(darkPaper: darkPaper)
-                        ]
+                        with: CGRect(x: x + PagesTableView.cellPadX, y: row.y - spec.y + 6, width: max(8, w - PagesTableView.cellPadX * 2), height: 16),
+                        options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine]
                     )
                 }
                 x += w
@@ -803,34 +807,29 @@ private final class TableSliceView: NSView {
             )
         }
         guard let block else { return }
-        let tableX = PagesTableView.rowBar
-        let tableW = max(8, bounds.width - PagesTableView.rowBar)
+        let tableW = max(8, columnWidths.reduce(0, +))
         for row in spec.rows {
             let y = row.y - spec.y
-            let rect = toPage(CGRect(x: tableX, y: y, width: tableW, height: PagesTableView.rowHeight))
+            let rect = toPage(CGRect(x: 0, y: y, width: tableW, height: PagesTableView.rowHeight))
             guard rect.intersects(paper) else { continue }
-            if row.storageRow == 0 {
-                Theme.tableHeaderFill(darkPaper: darkPaper).setFill()
-                rect.fill()
-            }
-            Theme.paperColor(darkPaper: darkPaper).setFill()
-            if row.storageRow != 0 { rect.fill() }
-            if row.storageRow == 0 {
-                Theme.tableHeaderFill(darkPaper: darkPaper).setFill()
-                rect.fill()
-            }
+            (Self.isStriped(row.storageRow) ? Theme.tableHeaderFill(darkPaper: darkPaper) : Theme.paperColor(darkPaper: darkPaper)).setFill()
+            rect.fill()
             Theme.tableBorder(darkPaper: darkPaper).setStroke()
-            NSBezierPath(rect: rect).stroke()
+            var cx: CGFloat = 0
+            for w in columnWidths {
+                NSBezierPath(rect: toPage(CGRect(x: cx + 0.5, y: y + 0.5, width: w - 1, height: PagesTableView.rowHeight))).stroke()
+                cx += w
+            }
             let font: NSFont = row.storageRow == 0
                 ? .systemFont(ofSize: 12, weight: .semibold)
                 : .systemFont(ofSize: 12, weight: .regular)
-            var x = tableX
+            var x: CGFloat = 0
             for c in 0..<max(1, block.columnCount) {
                 let w = c < columnWidths.count ? columnWidths[c] : PagesTableView.minColumn
                 let raw = row.storageRow < block.rows.count && c < block.rows[row.storageRow].count
                     ? block.rows[row.storageRow][c]
                     : ""
-                let text = raw.trimmingCharacters(in: .whitespaces) as NSString
+                let text = CellMarkdown.attributed(raw, font: font, color: Theme.bodyColor(darkPaper: darkPaper), darkPaper: darkPaper)
                 if text.length > 0 {
                     let cell = toPage(CGRect(
                         x: x + PagesTableView.cellPadX,
@@ -838,99 +837,10 @@ private final class TableSliceView: NSView {
                         width: max(8, w - PagesTableView.cellPadX * 2),
                         height: 16
                     ))
-                    text.draw(in: cell, withAttributes: [
-                        .font: font,
-                        .foregroundColor: Theme.bodyColor(darkPaper: darkPaper)
-                    ])
+                    text.draw(with: cell, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
                 }
                 x += w
             }
         }
-    }
-}
-
-/// Pages-style circular insert / delete control.
-final class PagesInsertButton: NSButton {
-    enum Kind { case add, remove }
-    var kind: Kind = .add
-    var darkPaper = false
-    private var hovered = false
-
-    convenience init(kind: Kind) {
-        self.init(frame: .zero)
-        self.kind = kind
-    }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        isBordered = false
-        image = nil
-        title = ""
-        focusRingType = .none
-        refusesFirstResponder = true
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override var acceptsFirstResponder: Bool { false }
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .pointingHand)
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .cursorUpdate, .activeAlways, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        ))
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        hovered = true
-        NSCursor.pointingHand.set()
-        needsDisplay = true
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        hovered = false
-        NSCursor.arrow.set()
-        needsDisplay = true
-    }
-
-    override func cursorUpdate(with event: NSEvent) {
-        NSCursor.pointingHand.set()
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let fill: NSColor
-        if kind == .remove {
-            fill = NSColor.systemRed.withAlphaComponent(hovered ? 0.95 : 0.8)
-        } else {
-            fill = NSColor.systemGreen.withAlphaComponent(hovered ? 0.95 : 0.82)
-        }
-        let circle = NSBezierPath(ovalIn: bounds.insetBy(dx: 0.5, dy: 0.5))
-        fill.setFill()
-        circle.fill()
-        NSColor.white.setStroke()
-        let cx = bounds.midX
-        let cy = bounds.midY
-        let arm: CGFloat = 3.4
-        let stroke = NSBezierPath()
-        stroke.lineWidth = 1.5
-        stroke.lineCapStyle = .round
-        stroke.move(to: CGPoint(x: cx - arm, y: cy))
-        stroke.line(to: CGPoint(x: cx + arm, y: cy))
-        if kind == .add {
-            stroke.move(to: CGPoint(x: cx, y: cy - arm))
-            stroke.line(to: CGPoint(x: cx, y: cy + arm))
-        }
-        stroke.stroke()
     }
 }

@@ -18,13 +18,22 @@ enum Theme {
     }
 
     static func codeFont(_ settings: EditorSettings) -> NSFont {
-        NSFont.monospacedSystemFont(ofSize: max(11.5, settings.fontSize + 0.5), weight: .regular)
+        NSFont.monospacedSystemFont(ofSize: max(9, settings.fontSize), weight: .regular)
     }
 
     static func font(named name: String, size: CGFloat, weight: NSFont.Weight, design: NSFontDescriptor.SystemDesign) -> NSFont {
         if let named = NSFont(name: name, size: size) { return named }
-        if name.lowercased().contains("new york"), let ny = NSFont(name: "NewYork-Regular", size: size) {
-            return ny
+        let lowered = name.lowercased()
+        if lowered.contains("new york") {
+            if let ny = NSFont(name: "NewYork-Regular", size: size) { return ny }
+            if let ny = NSFont(name: ".NewYork-Regular", size: size) { return ny }
+        }
+        if lowered == "sf pro" || lowered == "system" {
+            return NSFont.systemFont(ofSize: size, weight: weight)
+        }
+        let mask: NSFontTraitMask = weight >= .semibold ? .boldFontMask : []
+        if let family = NSFontManager.shared.font(withFamily: name, traits: mask, weight: 5, size: size) {
+            return family
         }
         let base = NSFont.systemFont(ofSize: size, weight: weight)
         if let descriptor = base.fontDescriptor.withDesign(design) {
@@ -43,7 +52,21 @@ enum Theme {
 
     static func canvasColor(darkPaper: Bool) -> NSColor {
         if darkPaper { return NSColor(white: 0.08, alpha: 1) }
-        return NSColor(calibratedWhite: 0.78, alpha: 1)
+        return NSColor(calibratedWhite: 0.93, alpha: 1)
+    }
+
+    /// Preview titlebar: light gray, only slightly frosted — not clear glass.
+    static func chromeColor(darkPaper: Bool) -> NSColor {
+        if darkPaper { return NSColor(white: 0.16, alpha: 1) }
+        return NSColor(calibratedWhite: 0.95, alpha: 1)
+    }
+
+    /// Preview-style thumbnail highlight: a light gray-blue rounded box around the page and number.
+    static func thumbnailSelectionFill(darkPaper: Bool) -> NSColor {
+        if darkPaper {
+            return NSColor(srgbRed: 0.32, green: 0.38, blue: 0.46, alpha: 1)
+        }
+        return NSColor(srgbRed: 0.84, green: 0.89, blue: 0.94, alpha: 1)
     }
 
     /// GitHub light `pre` / `.highlight` fill `#f6f8fa`.
@@ -65,6 +88,39 @@ enum Theme {
         path.stroke()
     }
 
+    /// GitHub (Primer) syntax palette, light and dark.
+    static func syntaxColor(_ kind: SyntaxHighlighter.Kind, darkPaper: Bool) -> NSColor {
+        func hex(_ v: UInt32) -> NSColor {
+            NSColor(srgbRed: CGFloat((v >> 16) & 0xFF) / 255, green: CGFloat((v >> 8) & 0xFF) / 255, blue: CGFloat(v & 0xFF) / 255, alpha: 1)
+        }
+        switch (kind, darkPaper) {
+        case (.keyword, false): return hex(0xCF222E)
+        case (.keyword, true): return hex(0xFF7B72)
+        case (.string, false): return hex(0x0A3069)
+        case (.string, true): return hex(0xA5D6FF)
+        case (.number, false), (.constant, false), (.attribute, false), (.property, false), (.variable, false): return hex(0x0550AE)
+        case (.number, true), (.constant, true), (.attribute, true), (.property, true), (.variable, true): return hex(0x79C0FF)
+        case (.comment, false): return hex(0x6E7781)
+        case (.comment, true): return hex(0x8B949E)
+        case (.type, false): return hex(0x953800)
+        case (.type, true): return hex(0xFFA657)
+        case (.function, false), (.meta, false): return hex(0x8250DF)
+        case (.function, true), (.meta, true): return hex(0xD2A8FF)
+        case (.tag, false): return hex(0x116329)
+        case (.tag, true): return hex(0x7EE787)
+        }
+    }
+
+    /// GitHub inline code box: rgba(175,184,193,0.2) on paper; rgba(110,118,129,0.4) on dark paper.
+    static func inlineCodeBox(darkPaper: Bool) -> NSColor {
+        darkPaper
+            ? NSColor(srgbRed: 110 / 255, green: 118 / 255, blue: 129 / 255, alpha: 0.4)
+            : NSColor(srgbRed: 175 / 255, green: 184 / 255, blue: 193 / 255, alpha: 0.2)
+    }
+    /// Horizontal padding inside an inline code box (the hidden backticks carry it as kern).
+    static let inlineCodePadding: CGFloat = 4
+    static let inlineCodeRadius: CGFloat = 4
+
     static func inlineCodeFill(darkPaper: Bool) -> NSColor {
         darkPaper ? NSColor(white: 0.22, alpha: 1) : NSColor(srgbRed: 0.175, green: 0.184, blue: 0.193, alpha: 0.12)
     }
@@ -75,10 +131,6 @@ enum Theme {
 
     static func tableBorder(darkPaper: Bool) -> NSColor {
         codeBlockBorder(darkPaper: darkPaper)
-    }
-
-    static func tableGutterFill(darkPaper: Bool) -> NSColor {
-        darkPaper ? NSColor(white: 0.16, alpha: 1) : NSColor(srgbRed: 0.945, green: 0.953, blue: 0.961, alpha: 1)
     }
 
     static func collapsedTableParagraph(spacingAfter: CGFloat = 0) -> NSParagraphStyle {
@@ -139,6 +191,11 @@ enum Theme {
     }
 }
 
+extension NSAttributedString.Key {
+    /// Marks a whole inline-code group (backticks + content); `MarkdownTextView` draws its rounded box.
+    static let markaInlineCode = NSAttributedString.Key("MarkaInlineCode")
+}
+
 enum StyleEngine {
     static func apply(
         to storage: NSTextStorage,
@@ -181,12 +238,21 @@ enum StyleEngine {
                 continue
             }
 
+            if case .inlineCode = span.kind, span.role == .marker {
+                storage.addAttribute(.markaInlineCode, value: true, range: span.group)
+            }
+            // Bold / italic content is styled in its own pass below (after every other font is set).
+            if span.role == .content, span.kind == .strong || span.kind == .emphasis { continue }
             if span.role == .marker && mode == .wysiwyg {
                 var hide: [NSAttributedString.Key: Any] = [
                     .font: NSFont.systemFont(ofSize: 0.01),
                     .foregroundColor: NSColor.clear,
                     .kern: -1
                 ]
+                if case .inlineCode = span.kind {
+                    // The hidden backticks become the box's left/right padding.
+                    hide[.kern] = Theme.inlineCodePadding / CGFloat(max(1, span.range.length))
+                }
                 if case .codeBlock = span.kind {
                     let isOpen = span.range.location == span.group.location
                     hide[.paragraphStyle] = Theme.bodyParagraph(
@@ -204,6 +270,18 @@ enum StyleEngine {
                 range: span.range
             )
         }
+        // Bold / italic add a trait to whatever font is already there, so `code`, links and nested
+        // emphasis inside **…** / *…* keep their own font (monospaced bold, …).
+        for span in spans where span.role == .content && (span.kind == .strong || span.kind == .emphasis) {
+            guard span.range.length > 0, NSMaxRange(span.range) <= storage.length else { continue }
+            let trait: NSFontTraitMask = span.kind == .strong ? .boldFontMask : .italicFontMask
+            storage.enumerateAttribute(.font, in: span.range) { value, range, _ in
+                let font = (value as? NSFont) ?? body
+                storage.addAttribute(.font, value: NSFontManager.shared.convert(font, toHaveTrait: trait), range: range)
+            }
+            storage.addAttribute(.foregroundColor, value: bodyColor, range: span.range)
+        }
+        highlightCode(in: storage, spans: spans, darkPaper: settings.darkPaper)
         if mode == .wysiwyg {
             for span in spans {
                 if case .heading(let level) = span.kind, span.role == .content {
@@ -240,11 +318,42 @@ enum StyleEngine {
             }
             for span in spans where span.role == .marker {
                 guard span.range.length > 0, NSMaxRange(span.range) <= storage.length else { continue }
+                if case .inlineCode = span.kind { continue }   // keeps its padding kern
                 storage.addAttributes([
                     .font: NSFont.systemFont(ofSize: 0.01),
                     .foregroundColor: NSColor.clear,
                     .kern: -1
                 ], range: span.range)
+            }
+            // Last: a table's GFM source sits under the opaque table overlay and must stay invisible.
+            // Inline passes above (code font, link blue, bold colour) would otherwise leak cell text
+            // ("Boldcodelink…") around the table.
+            for span in spans {
+                guard case .table = span.kind, span.range.length > 0, NSMaxRange(span.range) <= storage.length else { continue }
+                storage.addAttributes([
+                    .font: NSFont.systemFont(ofSize: 0.01),
+                    .foregroundColor: NSColor.clear,
+                    .kern: -20
+                ], range: span.range)
+                storage.removeAttribute(.markaInlineCode, range: span.range)
+                storage.removeAttribute(.underlineStyle, range: span.range)
+                storage.removeAttribute(.strikethroughStyle, range: span.range)
+            }
+        }
+    }
+
+    /// Colours fenced code by its info-string language. Foreground colour only: layout never changes.
+    static func highlightCode(in storage: NSTextStorage, spans: [StyleSpan], darkPaper: Bool) {
+        let ns = storage.string as NSString
+        for span in spans where span.role == .content {
+            guard case .codeBlock(let language) = span.kind,
+                  span.range.length > 0, NSMaxRange(span.range) <= storage.length,
+                  let lang = SyntaxHighlighter.language(for: language) else { continue }
+            let code = ns.substring(with: span.range)
+            for token in SyntaxHighlighter.tokens(in: code, language: lang) {
+                let range = NSRange(location: span.range.location + token.range.location, length: token.range.length)
+                guard NSMaxRange(range) <= storage.length else { continue }
+                storage.addAttribute(.foregroundColor, value: Theme.syntaxColor(token.kind, darkPaper: darkPaper), range: range)
             }
         }
     }
@@ -281,11 +390,9 @@ enum StyleEngine {
             }
         case .inlineCode:
             if span.role == .content {
-                attrs[.font] = Theme.codeFont(settings)
-                attrs[.backgroundColor] = Theme.inlineCodeFill(darkPaper: settings.darkPaper)
+                attrs[.font] = Theme.codeFont(settings).withSize(max(8, settings.fontSize * 0.9))
                 attrs[.foregroundColor] = bodyColor
-                attrs[.baselineOffset] = 1
-                attrs[.kern] = 0.4
+                attrs[.kern] = 0.2
             }
         case .codeBlock:
             attrs[.font] = Theme.codeFont(settings)

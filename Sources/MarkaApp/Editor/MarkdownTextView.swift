@@ -3,6 +3,8 @@ import MarkaCore
 
 @MainActor
 protocol MarkdownTextViewDelegate: AnyObject {
+    /// Called before every user/text edit is applied (before restyle and relayout move anything).
+    func markdownTextViewWillChange(_ view: MarkdownTextView)
     func markdownTextViewDidChange(_ view: MarkdownTextView)
     func markdownTextView(_ view: MarkdownTextView, didRequestRelayout: Void)
     func markdownTextViewDidChangeSelection(_ view: MarkdownTextView)
@@ -134,6 +136,26 @@ final class MarkdownTextView: NSTextView {
 
     func currentSource() -> String { string }
 
+    /// Window-point test for clickable chrome drawn over the text (code-block icons). The text view
+    /// re-applies its I-beam on every mouse move, which would override those views' cursor rects.
+    var pointerHotspot: ((NSPoint) -> Bool)?
+
+    override func mouseMoved(with event: NSEvent) {
+        if pointerHotspot?(event.locationInWindow) == true {
+            NSCursor.pointingHand.set()
+            return
+        }
+        super.mouseMoved(with: event)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        if pointerHotspot?(event.locationInWindow) == true {
+            NSCursor.pointingHand.set()
+            return
+        }
+        super.cursorUpdate(with: event)
+    }
+
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
         let text = (insertString as? String) ?? (insertString as? NSAttributedString)?.string ?? ""
         if string.isEmpty, !text.isEmpty {
@@ -151,6 +173,14 @@ final class MarkdownTextView: NSTextView {
             return
         }
         super.insertText(insertString, replacementRange: replacementRange)
+    }
+
+    override func shouldChangeText(in affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        let allowed = super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
+        if allowed, !isApplyingStyles {
+            markdownDelegate?.markdownTextViewWillChange(self)
+        }
+        return allowed
     }
 
     override func didChangeText() {
@@ -181,6 +211,77 @@ final class MarkdownTextView: NSTextView {
         (window?.undoManager ?? undoManager)?.redo()
     }
 
+    /// Rounded GitHub-style boxes behind inline code (one per line segment), in view coordinates.
+    /// Works with TextKit 2 and with the TextKit 1 fallback AppKit switches to once `layoutManager`
+    /// is touched.
+    func inlineCodeBoxRects(in area: NSRect? = nil) -> [CGRect] {
+        guard let storage = textStorage, storage.length > 0 else { return [] }
+        let origin = textContainerOrigin
+        var boxes: [CGRect] = []
+        func add(_ rect: CGRect, font: NSFont) {
+            guard rect.width > 1 else { return }
+            // Tight around the glyphs: drop the paragraph's extra leading below/above.
+            let height = min(rect.height, ceil(font.ascender - font.descender) + 4)
+            var box = CGRect(x: rect.minX + origin.x, y: rect.maxY - height + origin.y, width: rect.width, height: height)
+            box.origin.y -= max(0, (rect.height - height) * 0.15)
+            if let area, !box.intersects(area) { return }
+            boxes.append(box)
+        }
+        storage.enumerateAttribute(.markaInlineCode, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard value != nil, range.length > 0 else { return }
+            let font = (storage.attribute(.font, at: range.location + min(range.length - 1, 1), effectiveRange: nil) as? NSFont)
+                ?? NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+            if let tlm = textLayoutManager, let content = textContentStorage {
+                guard let start = content.location(tlm.documentRange.location, offsetBy: range.location),
+                      let end = content.location(start, offsetBy: range.length),
+                      let textRange = NSTextRange(location: start, end: end) else { return }
+                tlm.enumerateTextSegments(in: textRange, type: .standard, options: []) { _, rect, _, _ in
+                    add(rect, font: font)
+                    return true
+                }
+            } else if let lm = layoutManager, let container = textContainer {
+                let glyphs = lm.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+                lm.enumerateEnclosingRects(
+                    forGlyphRange: glyphs,
+                    withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
+                    in: container
+                ) { rect, _ in
+                    add(rect, font: font)
+                }
+            }
+        }
+        return boxes
+    }
+
+    /// Line-segment rects of a character range, in text-container coordinates (TextKit 2 or 1).
+    func segmentRects(for range: NSRange) -> [CGRect] {
+        guard let storage = textStorage, range.length > 0, NSMaxRange(range) <= storage.length else { return [] }
+        var rects: [CGRect] = []
+        if let tlm = textLayoutManager, let content = textContentStorage {
+            guard let start = content.location(tlm.documentRange.location, offsetBy: range.location),
+                  let end = content.location(start, offsetBy: range.length),
+                  let textRange = NSTextRange(location: start, end: end) else { return [] }
+            tlm.enumerateTextSegments(in: textRange, type: .standard, options: []) { _, rect, _, _ in
+                if rect.width > 0.5 { rects.append(rect) }
+                return true
+            }
+        } else if let lm = layoutManager, let container = textContainer {
+            let glyphs = lm.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            lm.enumerateEnclosingRects(forGlyphRange: glyphs, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: container) { rect, _ in
+                if rect.width > 0.5 { rects.append(rect) }
+            }
+        }
+        return rects
+    }
+
+    private func drawInlineCodeBoxes(in dirtyRect: NSRect) {
+        let radius = Theme.inlineCodeRadius
+        Theme.inlineCodeBox(darkPaper: editorSettings.darkPaper).setFill()
+        for box in inlineCodeBoxRects(in: dirtyRect) {
+            NSBezierPath(roundedRect: box, xRadius: radius, yRadius: radius).fill()
+        }
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         if let paged = superview as? PagedEditorView, paged.pageCount > 0 {
             NSGraphicsContext.saveGraphicsState()
@@ -195,10 +296,12 @@ final class MarkdownTextView: NSTextView {
                 clip.appendRect(content)
             }
             clip.addClip()
+            drawInlineCodeBoxes(in: dirtyRect)
             super.draw(dirtyRect)
             NSGraphicsContext.restoreGraphicsState()
             return
         }
+        drawInlineCodeBoxes(in: dirtyRect)
         super.draw(dirtyRect)
     }
 

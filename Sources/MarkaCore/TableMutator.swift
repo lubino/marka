@@ -193,6 +193,37 @@ public enum TableMutator {
         return EditResult(text: new, selected: NSRange(location: caret, length: 0))
     }
 
+    /// Moves data row `from` so it ends up at storage index `to` (both ≥ 2; the header and the
+    /// delimiter row never move). The caret follows the moved row.
+    public static func moveRow(source: String, cell: CellRef, to target: Int) -> EditResult? {
+        guard var block = block(at: cell.block.range.location, in: source) else { return nil }
+        let from = cell.row
+        guard from >= 2, from < block.rows.count else { return nil }
+        let to = min(max(2, target), block.rows.count - 1)
+        guard to != from else { return nil }
+        let row = block.rows.remove(at: from)
+        block.rows.insert(row, at: to)
+        return replace(source: source, block: block, focusRow: to, focusColumn: cell.column)
+    }
+
+    /// Moves column `cell.column` so it ends up at index `to`, in every row (header, delimiter,
+    /// alignment and data). The caret follows the moved column.
+    public static func moveColumn(source: String, cell: CellRef, to target: Int) -> EditResult? {
+        guard var block = block(at: cell.block.range.location, in: source) else { return nil }
+        let cols = block.columnCount
+        let from = cell.column
+        guard from >= 0, from < cols else { return nil }
+        let to = min(max(0, target), cols - 1)
+        guard to != from else { return nil }
+        for i in block.rows.indices {
+            var row = padded(block.rows[i], to: cols)
+            let value = row.remove(at: from)
+            row.insert(value, at: to)
+            block.rows[i] = row
+        }
+        return replace(source: source, block: block, focusRow: max(0, cell.row), focusColumn: to)
+    }
+
     public static func setCell(source: String, location: Int, row: Int, column: Int, value: String) -> EditResult? {
         guard var block = block(at: location, in: source) else { return nil }
         guard row != 1, row >= 0, row < block.rows.count else { return nil }
@@ -217,7 +248,10 @@ public enum TableMutator {
             let cells = (0..<cols).map { c -> String in
                 let raw = c < row.count ? row[c].trimmingCharacters(in: .whitespaces) : ""
                 if index == 1 {
-                    return String(repeating: "-", count: widths[c])
+                    // Keep GFM alignment (:--, :-:, --:) when the table is re-rendered.
+                    let left = raw.hasPrefix(":"), right = raw.hasSuffix(":") && raw.count > 1
+                    let dashes = max(1, widths[c] - (left ? 1 : 0) - (right ? 1 : 0))
+                    return (left ? ":" : "") + String(repeating: "-", count: dashes) + (right ? ":" : "")
                 }
                 return raw.padding(toLength: widths[c], withPad: " ", startingAt: 0)
             }.joined(separator: " | ")

@@ -42,38 +42,53 @@ enum ChipGlyph {
     case terminal
 }
 
+/// Small round icon button (copy / run). Borderless SF Symbol; the round glass behind it comes
+/// from `CopyChipView`. Always shows the pointing-hand cursor.
 final class CopyCodeButton: NSButton {
-    var glyph: ChipGlyph = .copy
-    private var hovered = false
+    var glyph: ChipGlyph = .copy { didSet { updateImage() } }
     private var copied = false
-    var darkPaper = false
+    var darkPaper = false { didSet { updateTint() } }
 
-    static let popupSize = CGSize(width: 26, height: 26)
+    static let popupSize = CGSize(width: 22, height: 22)
     /// How far the chip hangs past the block’s top-right corner.
-    static let hang: CGFloat = 9
+    static let hang: CGFloat = 7
     static let chipGap: CGFloat = 4
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         isBordered = false
         bezelStyle = .regularSquare
-        image = nil
         title = ""
-        toolTip = glyph == .terminal ? "Run in Terminal" : "Copy"
+        imagePosition = .imageOnly
+        imageScaling = .scaleNone
         focusRingType = .none
         refusesFirstResponder = true
-        wantsLayer = true
-        layer?.masksToBounds = false
-        shadow = NSShadow()
-        shadow?.shadowColor = NSColor.black.withAlphaComponent(0.22)
-        shadow?.shadowBlurRadius = 6
-        shadow?.shadowOffset = NSSize(width: 0, height: -1)
+        setButtonType(.momentaryChange)
+        updateImage()
+        updateTint()
     }
 
     override var acceptsFirstResponder: Bool { false }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    private func updateImage() {
+        let name: String
+        if copied {
+            name = "checkmark"
+        } else {
+            name = glyph == .terminal ? "apple.terminal" : "doc.on.doc"
+        }
+        let config = NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
+        image = NSImage(systemSymbolName: name, accessibilityDescription: glyph == .terminal ? "Run in Terminal" : "Copy")?
+            .withSymbolConfiguration(config)
+        toolTip = glyph == .terminal ? "Run in Terminal" : "Copy"
+    }
+
+    private func updateTint() {
+        contentTintColor = darkPaper ? NSColor(white: 0.92, alpha: 1) : NSColor(white: 0.25, alpha: 1)
     }
 
     override func resetCursorRects() {
@@ -91,132 +106,73 @@ final class CopyCodeButton: NSButton {
         ))
     }
 
-    override func mouseEntered(with event: NSEvent) {
-        hovered = true
-        NSCursor.pointingHand.set()
-        needsDisplay = true
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        hovered = false
-        NSCursor.arrow.set()
-        needsDisplay = true
-    }
-
-    override func cursorUpdate(with event: NSEvent) {
-        NSCursor.pointingHand.set()
-    }
-
+    override func mouseEntered(with event: NSEvent) { NSCursor.pointingHand.set() }
+    override func cursorUpdate(with event: NSEvent) { NSCursor.pointingHand.set() }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let alpha: CGFloat = hovered ? 0.92 : 0.58
-        let fill = darkPaper
-            ? NSColor.black.withAlphaComponent(alpha)
-            : NSColor.white.withAlphaComponent(alpha)
-        let chip = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 7, yRadius: 7)
-        fill.setFill()
-        chip.fill()
-        NSColor.separatorColor.withAlphaComponent(hovered ? 0.5 : 0.28).setStroke()
-        chip.lineWidth = 0.6
-        chip.stroke()
-
-        let ink = (darkPaper ? NSColor.white : NSColor(white: 0.22, alpha: 1))
-            .withAlphaComponent(hovered ? 0.95 : 0.8)
-        ink.setStroke()
-        if copied {
-            drawCheck(in: bounds)
-        } else if glyph == .terminal {
-            drawTerminal(in: bounds)
-        } else {
-            drawOverlappingSquares(in: bounds)
-        }
-    }
-
-    /// Two rounded squares, front over back — the standard copy glyph.
-    private func drawOverlappingSquares(in rect: CGRect) {
-        let side: CGFloat = 8.5
-        let radius: CGFloat = 1.6
-        let back = CGRect(x: rect.midX - 1.2, y: rect.midY - 6.4, width: side, height: side)
-        let front = CGRect(x: rect.midX - 7.2, y: rect.midY - 2.2, width: side, height: side)
-        let backPath = NSBezierPath(roundedRect: back, xRadius: radius, yRadius: radius)
-        let frontPath = NSBezierPath(roundedRect: front, xRadius: radius, yRadius: radius)
-        backPath.lineWidth = 1.35
-        frontPath.lineWidth = 1.35
-        backPath.stroke()
-        let fill = darkPaper
-            ? NSColor.black.withAlphaComponent(hovered ? 0.92 : 0.58)
-            : NSColor.white.withAlphaComponent(hovered ? 0.92 : 0.58)
-        fill.setFill()
-        frontPath.fill()
-        frontPath.stroke()
-    }
-
-    private func drawTerminal(in rect: CGRect) {
-        let window = CGRect(x: rect.midX - 7, y: rect.midY - 5.5, width: 14, height: 11)
-        let path = NSBezierPath(roundedRect: window, xRadius: 2, yRadius: 2)
-        path.lineWidth = 1.25
-        path.stroke()
-        let prompt = NSBezierPath()
-        prompt.move(to: CGPoint(x: window.minX + 3, y: window.midY + 1.5))
-        prompt.line(to: CGPoint(x: window.minX + 6, y: window.midY - 0.5))
-        prompt.line(to: CGPoint(x: window.minX + 3, y: window.midY - 2.5))
-        prompt.lineWidth = 1.2
-        prompt.lineCapStyle = .round
-        prompt.lineJoinStyle = .round
-        prompt.stroke()
-        let cursor = NSBezierPath()
-        cursor.move(to: CGPoint(x: window.minX + 7.5, y: window.midY - 2.2))
-        cursor.line(to: CGPoint(x: window.minX + 11, y: window.midY - 2.2))
-        cursor.lineWidth = 1.2
-        cursor.lineCapStyle = .round
-        cursor.stroke()
-    }
-
-    private func drawCheck(in rect: CGRect) {
-        let path = NSBezierPath()
-        path.move(to: CGPoint(x: rect.midX - 5, y: rect.midY))
-        path.line(to: CGPoint(x: rect.midX - 1.5, y: rect.midY + 4))
-        path.line(to: CGPoint(x: rect.midX + 5.5, y: rect.midY - 4))
-        path.lineWidth = 1.6
-        path.lineCapStyle = .round
-        path.lineJoinStyle = .round
-        path.stroke()
-    }
 
     func showCopied() {
         copied = true
-        needsDisplay = true
+        updateImage()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
             self?.copied = false
-            self?.needsDisplay = true
+            self?.updateImage()
         }
     }
 }
 
-/// Semi-transparent copy chip that hangs off a block’s top-right corner.
+/// Round glass icons (run, copy) hanging off a block’s top-right corner. No tile, no border:
+/// Liquid Glass on macOS 26+, a translucent material on 14/15.
 final class CopyChipView: NSView {
     var copyText: String = ""
     var runScript: String?
     var onRun: ((String) -> Void)?
     let copyButton = CopyCodeButton()
     let runButton = CopyCodeButton()
+    private let copyGlass: NSView
+    private let runGlass: NSView
 
     override var isFlipped: Bool { true }
     var showsRun: Bool { runScript != nil }
 
+    private static func roundGlass(around button: NSButton) -> NSView {
+        let size = CopyCodeButton.popupSize
+        let radius = size.height / 2
+        // The glass sizes its content view; a plain container keeps the button exactly 22 × 22.
+        let container = NSView(frame: NSRect(origin: .zero, size: size))
+        button.frame = container.bounds
+        button.autoresizingMask = [.width, .height]
+        button.translatesAutoresizingMaskIntoConstraints = true
+        container.addSubview(button)
+        if GlassChrome.usesLiquidGlass {
+            let glass = GlassChrome.wrap(container, style: .regular, cornerRadius: radius, interactive: true)
+            glass.frame = NSRect(origin: .zero, size: size)
+            return glass
+        }
+        let effect = NSVisualEffectView()
+        effect.material = .popover
+        effect.blendingMode = .withinWindow
+        effect.state = .active
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = radius
+        effect.layer?.masksToBounds = true
+        container.autoresizingMask = [.width, .height]
+        effect.frame = NSRect(origin: .zero, size: size)
+        effect.addSubview(container)
+        return effect
+    }
+
     override init(frame frameRect: NSRect) {
+        copyGlass = Self.roundGlass(around: copyButton)
+        runGlass = Self.roundGlass(around: runButton)
         super.init(frame: frameRect)
         copyButton.glyph = .copy
-        copyButton.toolTip = "Copy"
         copyButton.target = self
         copyButton.action = #selector(copyTapped)
         runButton.glyph = .terminal
-        runButton.toolTip = "Run in Terminal"
         runButton.target = self
         runButton.action = #selector(runTapped)
-        addSubview(copyButton)
-        addSubview(runButton)
+        addSubview(runGlass)
+        addSubview(copyGlass)
     }
 
     required init?(coder: NSCoder) {
@@ -228,7 +184,7 @@ final class CopyChipView: NSView {
         self.runScript = runScript
         copyButton.darkPaper = darkPaper
         runButton.darkPaper = darkPaper
-        runButton.isHidden = runScript == nil
+        runGlass.isHidden = runScript == nil
         needsLayout = true
         window?.invalidateCursorRects(for: copyButton)
         window?.invalidateCursorRects(for: runButton)
@@ -251,22 +207,30 @@ final class CopyChipView: NSView {
         let size = CopyCodeButton.popupSize
         var x: CGFloat = 0
         if showsRun {
-            runButton.frame = CGRect(origin: .zero, size: size)
+            runGlass.frame = CGRect(origin: .zero, size: size)
             x = size.width + CopyCodeButton.chipGap
         } else {
-            runButton.frame = .zero
+            runGlass.frame = .zero
         }
-        copyButton.frame = CGRect(x: x, y: 0, width: size.width, height: size.height)
+        copyGlass.frame = CGRect(x: x, y: 0, width: size.width, height: size.height)
         window?.invalidateCursorRects(for: copyButton)
         window?.invalidateCursorRects(for: runButton)
     }
 
+    /// Only the round icons take clicks; the gap between them passes through to the text.
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden, frame.contains(point) else { return nil }
         let local = convert(point, from: superview)
-        if copyButton.frame.contains(local) { return copyButton }
-        if showsRun, runButton.frame.contains(local) { return runButton }
+        if copyGlass.frame.contains(local) { return copyButton }
+        if showsRun, runGlass.frame.contains(local) { return runButton }
         return nil
+    }
+
+    /// True when `windowPoint` is over one of the icons (used to keep the pointing-hand cursor).
+    func containsIcon(atWindowPoint windowPoint: NSPoint) -> Bool {
+        guard !isHidden, window != nil else { return false }
+        let local = convert(windowPoint, from: nil)
+        return copyGlass.frame.contains(local) || (showsRun && runGlass.frame.contains(local))
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }

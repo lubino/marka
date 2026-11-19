@@ -56,36 +56,65 @@ open build/Marka.app
 
 ## What you get
 
-- WYSIWYG Markdown (markers stay hidden; source mode `⌘/` shows raw Markdown)
-- Live A4 pages with thumbnail sidebar (white page chips, no grey frame)
-- Headings, emphasis, lists, task lists, quotes, images
-- Word-style links: blue display text (including `[`file.md`](./file.md)`), URL card (Open / Copy / Remove). Local Markdown opens in Marka; other URLs open in the system app
-- GitHub-style fenced code and quotes: overlapping-squares copy chip hanging off the top-right corner. Shell fences also get a Terminal chip that runs the block in Terminal.app
-- Pages-style tables: size grid on insert, empty cells, A/B/C column letters and row numbers, green + to add and red − to delete (select a row or column first). Last row/column removes the table. Long tables split across pages with a repeated header. WYSIWYG never shows the raw `|` pipes.
-- Crash logs in `~/Library/Logs/Marka`; the next launch offers to show the latest report
-- Live format toolbar: Bold, headings, and other controls highlight from the caret and toggle off when already applied. The Code control is a popup (Inline / Text / Bash / Python / Swift / JSON) that inserts an empty fenced block with the caret inside, or toggles inline backticks. Controls disable in fenced code, a Pages table, and other places where that format cannot apply
-- Compact headings and paragraphs; GitHub-style underline under Heading 1 and 2 (the rule is not a typeable line)
-- Preview-style chrome: sidebar button before the document title; zoom is − / Auto / + magnifiers. Zoomed-out pages stay centered.
-- Manual page break: `<!-- pagebreak -->`
-- Export PDF (`⌘⇧E`) and print (`⌘P`) using the same pages
-- Share the `.md` file or a generated PDF
-- Autosave, find & replace, zoom, light/dark UI (paper stays white unless you enable dark paper)
-
 The saved file is ordinary UTF-8 GitHub-Flavored Markdown. Opening and saving without edits keeps the original bytes, including line endings.
+
+**Writing**
+
+- WYSIWYG Markdown: markers stay hidden while you write; source mode (`⌘/`) shows the raw Markdown.
+- Headings (GitHub-style rule under Heading 1 and 2), bold, italic, strikethrough, lists, task lists, quotes, images, horizontal rules, and manual page breaks (`<!-- pagebreak -->`).
+- Bold and italic can wrap links and inline code (`**[readme](README.md)**`, `**`Marka.dmg`**`); inline code gets GitHub's rounded box.
+- Live format toolbar: controls highlight from the cursor, toggle off when already applied, and disable where a format cannot apply (fenced code, tables, …). The Code pull-down toggles inline code or inserts an empty fenced block (Text, Bash, Python, Swift, JSON).
+- Search & replace popover from the toolbar search button (`⌘F` / `⌥⌘F`): match count, next/previous, Replace, Replace All, Match Case, Whole Words.
+- Editing never makes the view jump, even when you change a code block's language.
+
+**Links**
+
+- Word-style links: only the blue label shows; a card shows the address (Open / Copy / Remove). `⌘`-click opens.
+- Links to Markdown files open in a new Marka tab. A link to a Markdown file that does not exist yet creates it (empty) next to the document.
+
+**Code**
+
+- Fenced code is syntax-highlighted: bash, JSON, Python, JavaScript/TypeScript, C/C++, Swift, HTML, XML, CSS, YAML, Go, Rust, Java, Kotlin, Ruby, SQL, PHP.
+- Small round glass Copy icon on code blocks and quotes; shell blocks also get a Run-in-Terminal icon.
+
+**Tables**
+
+- Tables look like GitHub's. Insert one from the toolbar's Table gallery (Basic, Two Columns, Wide, Compact, Tall, Grid).
+- Cells hold inline Markdown (bold, italic, `code`, links), rendered in place; click a cell to edit its source. Tab / Return move between cells and add a row at the end.
+- With the cursor in a cell, a small bar under the table inserts and deletes rows and columns, and grips let you drag a row or column to a new place. The same commands are in Format → Table and the cell's right-click menu.
+- Long tables continue on the next page with the header repeated.
+
+**Pages, export, print**
+
+- Live A4 pages; what you see is what PDF and print produce.
+- Export PDF (`⇧⌘E`) keeps links clickable. File → Print… (`⌘P`) and the toolbar Print button open the standard print dialog.
+- Share the document's `.md` file with the standard macOS share button or File → Share.
+
+**Window**
+
+- Preview-style window: full-height thumbnail sidebar with the window controls on it, the document scrolling under a translucent toolbar, Liquid Glass on macOS 26+.
+- New documents open as tabs; the tab bar appears once two or more tabs are open.
+- Zoom pull-down with 25–400 % presets and Auto (fits the page to the window, shown as "Auto %").
+- The toolbar shows the current page number. Click it (or View → Go to Page…, `⌥⌘G`) to jump to a page and see word, character, selection and reading-time counts, structure counts, a word-goal progress bar, encoding, line endings, file size, and the file path.
+- Settings (`⌘,`): default font and size (Times New Roman 10 pt), margins, page numbers, autosave, dark paper, word goal, page number in the toolbar.
+- Autosave, light/dark UI (paper stays white unless you enable dark paper). Crash logs go to `~/Library/Logs/Marka`, and the next launch offers to show the latest report.
 
 ## Shortcuts
 
-| Action               |     | Shortcut                                                    |
-| -------------------- | --- | ----------------------------------------------------------- |
-| Undo / Redo          |     | `⌘Z` or `Ctrl+Z` / `⌘⇧Z`                                    |
-| Bold / Italic / Link |     | `⌘B` / `⌘I` / `⌘K`                                          |
-| Find                 |     | `⌘F`                                                        |
-| Source mode          |     | `⌘/`                                                        |
-| Sidebar              |     | `⌘⌥S`                                                       |
-| Export PDF           |     | `⌘⇧E`                                                       |
-| Print                |     | `⌘P`                                                        |
-| Zoom                 |     | Auto / Wide (default Auto), `⌘+` `⌘-` `⌘0`                  |
-| Table                |     | Format → Table (row above/below, column left/right, delete) |
+| Action                        | Shortcut                                  |
+| ----------------------------- | ----------------------------------------- |
+| Undo / Redo                   | `⌘Z` or `⌃Z` / `⇧⌘Z`                      |
+| Bold / Italic / Link          | `⌘B` / `⌘I` / `⌘K`                        |
+| Heading 1 / 2 / 3             | `⌥⌘1` / `⌥⌘2` / `⌥⌘3`                     |
+| Find / Find and Replace       | `⌘F` / `⌥⌘F`                              |
+| Find Next / Previous          | `⌘G` / `⇧⌘G`                              |
+| Go to Page                    | `⌥⌘G`                                     |
+| Source mode                   | `⌘/`                                      |
+| Thumbnails sidebar            | `⌥⌘S`                                     |
+| Zoom in / out / actual size   | `⌘+` / `⌘-` / `⌘0`                        |
+| Export PDF / Print            | `⇧⌘E` / `⌘P`                              |
+| Settings                      | `⌘,`                                      |
+| Table rows and columns        | Format → Table, or the bar under a table  |
 
 ## License
 

@@ -7,17 +7,41 @@ final class MarkaDocumentController: NSDocumentController {
     override func documentClass(forType typeName: String) -> AnyClass? {
         MarkdownDocument.self
     }
+
+    /// An untitled document nobody has typed into yet — it gives way to a file the user opens.
+    static func isPristineUntitled(_ document: NSDocument) -> Bool {
+        guard document.fileURL == nil, !document.isDocumentEdited else { return false }
+        return (document as? MarkdownDocument)?.editorString().isEmpty ?? true
+    }
+
+    /// Opening a file while the only document is an untouched "Untitled" replaces it (TextEdit-style)
+    /// instead of leaving an empty first tab.
+    override func openDocument(
+        withContentsOf url: URL,
+        display displayDocument: Bool,
+        completionHandler: @escaping (NSDocument?, Bool, (any Error)?) -> Void
+    ) {
+        let placeholders = documents.filter(Self.isPristineUntitled)
+        let replace = documents.count == 1 && placeholders.count == 1
+        super.openDocument(withContentsOf: url, display: displayDocument) { document, alreadyOpen, error in
+            if replace, document != nil, !alreadyOpen {
+                placeholders.forEach { $0.close() }
+            }
+            completionHandler(document, alreadyOpen, error)
+        }
+    }
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private static let shareItemID = NSUserInterfaceItemIdentifier("file.share")
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = true
         buildMenu()
         CrashReporter.presentPendingReportIfNeeded()
-        if NSDocumentController.shared.documents.isEmpty {
-            _ = try? NSDocumentController.shared.openUntitledDocumentAndDisplay(true)
-        }
+        // No explicit "open Untitled" here: files opened from Finder arrive *after* this callback, and
+        // AppKit asks `applicationShouldOpenUntitledFile` only when nothing else is being opened.
     }
 
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { true }
@@ -57,8 +81,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         file.addItem(withTitle: "Save As…", action: #selector(NSDocument.saveAs(_:)), keyEquivalent: "S")
         file.addItem(.separator())
         file.addItem(withTitle: "Export PDF…", action: #selector(DocumentWindowController.exportPDF), keyEquivalent: "e").keyEquivalentModifierMask = [.command, .shift]
-        file.addItem(withTitle: "Print…", action: #selector(DocumentWindowController.printDocumentAction), keyEquivalent: "p")
-        file.addItem(withTitle: "Share", action: #selector(DocumentWindowController.shareAction(_:)), keyEquivalent: "")
+        file.addItem(withTitle: "Print…", action: #selector(NSDocument.printDocument(_:)), keyEquivalent: "p")
+        // Replaced by the system Share submenu for the current document each time the menu opens.
+        let share = file.addItem(withTitle: "Share", action: nil, keyEquivalent: "")
+        share.identifier = Self.shareItemID
+        share.isEnabled = false
+        file.delegate = self
         fileItem.submenu = file
         main.addItem(fileItem)
 
@@ -80,8 +108,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         edit.addItem(.separator())
         edit.addItem(withTitle: "Find…", action: #selector(DocumentWindowController.findAction), keyEquivalent: "f")
-        edit.addItem(withTitle: "Find Next", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "g")
-        let replace = edit.addItem(withTitle: "Find and Replace…", action: #selector(DocumentWindowController.findAction), keyEquivalent: "f")
+        edit.addItem(withTitle: "Find Next", action: #selector(DocumentWindowController.findNextAction), keyEquivalent: "g")
+        edit.addItem(withTitle: "Find Previous", action: #selector(DocumentWindowController.findPreviousAction), keyEquivalent: "G")
+        let replace = edit.addItem(withTitle: "Find and Replace…", action: #selector(DocumentWindowController.findAndReplaceAction), keyEquivalent: "f")
         replace.keyEquivalentModifierMask = [.command, .option]
         editItem.submenu = edit
         main.addItem(editItem)
@@ -136,8 +165,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         view.addItem(withTitle: "Toggle Sidebar", action: #selector(DocumentWindowController.toggleSidebar), keyEquivalent: "s").keyEquivalentModifierMask = [.command, .option]
         view.addItem(withTitle: "Source Mode", action: #selector(DocumentWindowController.toggleSourceMode), keyEquivalent: "/")
         view.addItem(.separator())
-        view.addItem(withTitle: "Auto Width", action: #selector(DocumentWindowController.zoomAuto), keyEquivalent: "")
-        view.addItem(withTitle: "Wide", action: #selector(DocumentWindowController.zoomWide), keyEquivalent: "")
+        view.addItem(withTitle: "Go to Page…", action: #selector(DocumentWindowController.showDocumentInfo(_:)), keyEquivalent: "g").keyEquivalentModifierMask = [.command, .option]
+        view.addItem(.separator())
+        view.addItem(withTitle: "Auto Zoom", action: #selector(DocumentWindowController.zoomAuto), keyEquivalent: "")
         view.addItem(withTitle: "Zoom In", action: #selector(DocumentWindowController.zoomIn), keyEquivalent: "+")
         view.addItem(withTitle: "Zoom Out", action: #selector(DocumentWindowController.zoomOut), keyEquivalent: "-")
         view.addItem(withTitle: "Actual Size", action: #selector(DocumentWindowController.zoomActual), keyEquivalent: "0")
@@ -161,6 +191,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main.addItem(helpItem)
 
         NSApp.mainMenu = main
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard let index = menu.items.firstIndex(where: { $0.identifier == Self.shareItemID }) else { return }
+        let controller = (NSApp.mainWindow ?? NSApp.keyWindow)?.windowController as? DocumentWindowController
+        let item: NSMenuItem
+        if let controller {
+            item = controller.makeShareMenuItem()
+        } else {
+            item = NSMenuItem(title: "Share", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+        }
+        item.identifier = Self.shareItemID
+        menu.removeItem(at: index)
+        menu.insertItem(item, at: index)
     }
 
     @objc private func openHelp() {

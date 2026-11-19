@@ -35,11 +35,17 @@ public enum Hyperlink {
             if let url = URL(string: withScheme) { return .remote(url) }
         }
 
+        // Local paths: `<new idea.md>` and `new%20idea.md` both mean the file "new idea.md".
+        var path = trimmed
+        if path.hasPrefix("<"), path.hasSuffix(">") { path = String(path.dropFirst().dropLast()) }
+        path = path.removingPercentEncoding ?? path
         let fileURL: URL
-        if trimmed.hasPrefix("/") {
-            fileURL = URL(fileURLWithPath: trimmed).standardizedFileURL
+        if path.hasPrefix("/") {
+            fileURL = URL(fileURLWithPath: path).standardizedFileURL
         } else if let directory {
-            fileURL = URL(fileURLWithPath: trimmed, relativeTo: directory).standardizedFileURL
+            // Without a trailing slash the base would resolve against its *parent* folder.
+            let base = directory.hasDirectoryPath ? directory : URL(fileURLWithPath: directory.path, isDirectory: true)
+            fileURL = URL(fileURLWithPath: path, relativeTo: base).standardizedFileURL
         } else if let url = URL(string: trimmed), url.scheme != nil {
             return .remote(url)
         } else {
@@ -66,10 +72,38 @@ public enum Hyperlink {
         guard let destination = destination(raw, relativeTo: directory) else { return }
         switch destination {
         case .markdown(let url):
-            NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, _ in }
+            // A link to a Markdown file that does not exist yet creates it (empty) and opens it —
+            // as a tab of the current window (see `DocumentWindowController.showWindow`).
+            do {
+                try createMarkdownFileIfMissing(url)
+            } catch {
+                NSApp.presentError(error)
+                return
+            }
+            NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, error in
+                if let error { NSApp.presentError(error) }
+            }
         case .file(let url), .remote(let url):
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// Creates an empty file (and missing parent folders) at `url`. Returns true when it created one.
+    /// Never touches an existing file.
+    @discardableResult
+    public static func createMarkdownFileIfMissing(_ url: URL) throws -> Bool {
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        if fm.fileExists(atPath: url.path, isDirectory: &isDirectory) {
+            if isDirectory.boolValue {
+                throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: url.path])
+            }
+            return false
+        }
+        try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // `.withoutOverwriting` guards against a file appearing between the check and the write.
+        try Data().write(to: url, options: .withoutOverwriting)
+        return true
     }
 
     public static func copy(_ raw: String) {

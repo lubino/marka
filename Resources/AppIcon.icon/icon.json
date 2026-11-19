@@ -1,0 +1,43 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "extended-srgb:0.96863,0.97647,0.98824,1.00000",
+      "extended-srgb:0.85098,0.87451,0.90588,1.00000"
+    ]
+  },
+  "groups" : [
+    {
+      "name" : "Wordmark",
+      "lighting" : "individual",
+      "specular" : true,
+      "shadow" : { "kind" : "layer-color", "opacity" : 0.5 },
+      "translucency" : { "enabled" : false, "value" : 0.5 },
+      "layers" : [
+        { "name" : "wordmark", "image-name" : "wordmark.svg", "glass" : true, "opacity" : 1.0 }
+      ]
+    },
+    {
+      "name" : "Glass bars",
+      "lighting" : "individual",
+      "specular" : true,
+      "shadow" : { "kind" : "layer-color", "opacity" : 0.5 },
+      "translucency" : { "enabled" : true, "value" : 0.5 },
+      "layers" : [
+        { "name" : "glass-bars", "image-name" : "glass-bars.svg", "glass" : true, "opacity" : 0.6 }
+      ]
+    },
+    {
+      "name" : "Bars",
+      "lighting" : "individual",
+      "specular" : true,
+      "shadow" : { "kind" : "layer-color", "opacity" : 0.5 },
+      "translucency" : { "enabled" : false, "value" : 0.5 },
+      "layers" : [
+        { "name" : "bars", "image-name" : "bars.svg", "glass" : true, "opacity" : 1.0 }
+      ]
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : "shared"
+  }
+}

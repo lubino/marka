@@ -31,10 +31,55 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 chmod +x "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
+# SwiftPM's default (Swift Build) backend stamps LC_BUILD_VERSION with "sdk 14.0" (the deployment
+# target) instead of the real SDK. macOS then runs Marka in its pre-Tahoe compatibility appearance:
+# no Liquid Glass sidebar/toolbar, classic flat tab bar. Re-stamp with the SDK we actually built
+# against (before codesigning below).
+SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
+MIN_VERSION="$(sed -n 's/.*\.macOS(\.v\([0-9]*\)).*/\1.0/p' "$ROOT_DIR/Package.swift" | head -1)"
+MIN_VERSION="${MIN_VERSION:-14.0}"
+xcrun vtool -set-build-version macos "$MIN_VERSION" "$SDK_VERSION" -replace \
+    -output "$APP_BUNDLE/Contents/MacOS/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+if ! xcrun vtool -show-build "$APP_BUNDLE/Contents/MacOS/$APP_NAME" | grep -q "sdk $SDK_VERSION"; then
+    echo "error: $APP_NAME binary is not stamped with SDK $SDK_VERSION" >&2
+    exit 1
+fi
+
+# App icon. One vector source (scripts/generate-icon.swift):
+#  * AppIcon.icns — flat fallback for macOS 14/15 (CFBundleIconFile), rendered from the vectors.
+#  * Assets.car   — Liquid Glass icon for macOS 26+ (CFBundleIconName), compiled from the committed
+#                   Icon Composer bundle Resources/AppIcon.icon. Needs Xcode 26+'s actool (CI has it;
+#                   Command Line Tools do not), so CLT-only builds ship just the .icns.
 ICONSET_TMP="$(mktemp -d)/AppIcon.iconset"
 swift "$ROOT_DIR/scripts/generate-icon.swift" "$ICONSET_TMP"
 iconutil -c icns "$ICONSET_TMP" -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 rm -rf "$(dirname "$ICONSET_TMP")"
+
+ICON_NAME_PLIST=""
+ICON_SOURCE="$ROOT_DIR/Resources/AppIcon.icon"
+if ACTOOL="$(xcrun --find actool 2>/dev/null)" && [[ -d "$ICON_SOURCE" ]]; then
+    ACTOOL_MAJOR="$("$ACTOOL" --version 2>/dev/null | sed -n 's/.*<string>\([0-9][0-9]*\)\..*/\1/p' | head -1)"
+    if [[ "${ACTOOL_MAJOR:-0}" -ge 26 ]]; then
+        echo "==> Compiling Liquid Glass icon with actool ${ACTOOL_MAJOR}…"
+        ACTOOL_OUT="$(mktemp -d)"
+        if "$ACTOOL" "$ICON_SOURCE" --compile "$ACTOOL_OUT" --app-icon AppIcon \
+            --enable-on-demand-resources NO --development-region en --target-device mac \
+            --platform macosx --include-all-app-icons --minimum-deployment-target "$MIN_VERSION" \
+            --output-partial-info-plist "$ACTOOL_OUT/partial.plist" >/dev/null \
+            && [[ -f "$ACTOOL_OUT/Assets.car" ]]; then
+            cp "$ACTOOL_OUT/Assets.car" "$APP_BUNDLE/Contents/Resources/Assets.car"
+            ICON_NAME_PLIST="    <key>CFBundleIconName</key>
+    <string>AppIcon</string>"
+        else
+            echo "warning: actool failed; shipping the flat AppIcon.icns only" >&2
+        fi
+        rm -rf "$ACTOOL_OUT"
+    else
+        echo "==> actool ${ACTOOL_MAJOR:-?} < 26: shipping the flat AppIcon.icns only"
+    fi
+else
+    echo "==> No actool (Command Line Tools only): shipping the flat AppIcon.icns only"
+fi
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -47,6 +92,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <string>${APP_NAME}</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
+${ICON_NAME_PLIST}
     <key>CFBundleIdentifier</key>
     <string>${BUNDLE_ID}</string>
     <key>CFBundleInfoDictionaryVersion</key>

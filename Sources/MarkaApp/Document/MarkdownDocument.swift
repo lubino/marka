@@ -69,6 +69,16 @@ final class MarkdownDocument: NSDocument {
         }
     }
 
+    /// File → Print… / toolbar Print: AppKit shows the standard print sheet on the document window.
+    override func printOperation(withSettings printSettings: [NSPrintInfo.AttributeKey: Any]) throws -> NSPrintOperation {
+        guard let controller = windowControllers.first as? DocumentWindowController else {
+            throw CocoaError(.featureUnsupported)
+        }
+        let info = printInfo.copy() as! NSPrintInfo
+        info.dictionary().addEntries(from: printSettings)
+        return MainActor.assumeIsolated { controller.makePrintOperation(printInfo: info) }
+    }
+
     func editorString() -> String {
         (windowControllers.first as? DocumentWindowController)?.markdownString() ?? pendingString ?? loadedString
     }

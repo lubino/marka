@@ -11,13 +11,14 @@ public struct PageGeometry: Equatable, Sendable {
     public static let millimetresPerPoint: CGFloat = 25.4 / 72.0
     public static let pointsPerMillimetre: CGFloat = 72.0 / 25.4
 
-    public static let zoomSteps: [CGFloat] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
-    public static let canvasPadding: CGFloat = 28
+    /// Zoom presets (toolbar zoom menu and ⌘+ / ⌘− steps), matching the 25–400 % magnification range.
+    public static let zoomSteps: [CGFloat] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0]
+    public static let canvasPadding: CGFloat = 16
 
     public init(
         paperSize: CGSize = PageGeometry.a4PaperSize,
         margin: CGFloat = 20 * PageGeometry.pointsPerMillimetre,
-        interPageGap: CGFloat = 24,
+        interPageGap: CGFloat = 8,
         showPageNumbers: Bool = true
     ) {
         self.paperSize = paperSize

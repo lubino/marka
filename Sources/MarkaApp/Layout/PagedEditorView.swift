@@ -34,6 +34,11 @@ final class PagedEditorView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         addSubview(textView)
+        textView.pointerHotspot = { [weak self] point in
+            guard let self else { return false }
+            return self.codeHeaders.contains { $0.containsIcon(atWindowPoint: point) }
+                || self.pagesTables.contains { $0.editChromeContains(windowPoint: point) }
+        }
         linkCard.cardDelegate = self
         linkCard.isHidden = true
     }
@@ -53,15 +58,15 @@ final class PagedEditorView: NSView {
                 paddingY: PageGeometry.canvasPadding
             )
             let shadow = NSShadow()
-            shadow.shadowBlurRadius = 12
-            shadow.shadowOffset = NSSize(width: 0, height: isFlipped ? 2 : -2)
-            shadow.shadowColor = NSColor.black.withAlphaComponent(0.18)
+            shadow.shadowBlurRadius = 5
+            shadow.shadowOffset = NSSize(width: 0, height: isFlipped ? 1 : -1)
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.08)
             shadow.set()
             let path = NSBezierPath(rect: paper)
             Theme.paperColor(darkPaper: darkPaper).setFill()
             path.fill()
             NSShadow().set()
-            NSColor.black.withAlphaComponent(0.08).setStroke()
+            NSColor.black.withAlphaComponent(0.04).setStroke()
             path.lineWidth = 1
             path.stroke()
             if geometry.showPageNumbers {
@@ -109,6 +114,10 @@ final class PagedEditorView: NSView {
             }
         }
     }
+
+    /// Another relayout pass is queued after the current one (the layout has not settled yet).
+    /// The pass that is running right now does not count: `onPagesChanged` fires at its end.
+    var hasPendingRelayout: Bool { relayoutQueued }
 
     func queueRelayout() {
         if isRelayouting {
@@ -260,6 +269,34 @@ final class PagedEditorView: NSView {
             return lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY
         }
         return 0
+    }
+
+    /// 0-based page that holds the given source location (e.g. the caret).
+    func pageIndex(forCharacterAt utf16Offset: Int) -> Int {
+        let length = textView.string.utf16.count
+        guard length > 0 else { return 0 }
+        let y = caretY(at: min(max(0, utf16Offset), length))
+        return min(pageCount - 1, PageLayout.pageIndex(forTextY: y, geometry: geometry))
+    }
+
+    /// Source range laid out on each page (by layout fragment), `pageCount` entries.
+    func pageTextRanges() -> [NSRange] {
+        var ranges = Array(repeating: NSRange(location: NSNotFound, length: 0), count: max(1, pageCount))
+        func add(_ range: NSRange, minY: CGFloat) {
+            let page = min(ranges.count - 1, PageLayout.pageIndex(forTextY: minY, geometry: geometry))
+            ranges[page] = ranges[page].location == NSNotFound ? range : NSUnionRange(ranges[page], range)
+        }
+        if let tlm = textView.textLayoutManager, let content = textView.textContentStorage {
+            let start = tlm.documentRange.location
+            tlm.enumerateTextLayoutFragments(from: start, options: [.ensuresLayout]) { fragment in
+                let range = fragment.rangeInElement
+                let location = content.offset(from: start, to: range.location)
+                let length = content.offset(from: range.location, to: range.endLocation)
+                add(NSRange(location: location, length: length), minY: fragment.layoutFragmentFrame.minY)
+                return true
+            }
+        }
+        return ranges.map { $0.location == NSNotFound ? NSRange(location: 0, length: 0) : $0 }
     }
 
     func paperRect(page index: Int) -> CGRect {
@@ -540,7 +577,7 @@ final class PagedEditorView: NSView {
 
     func copyPopupIsTopRight() -> Bool {
         guard let header = codeHeaders.first, let background = codeBackgrounds.first else { return false }
-        let button = header.convert(header.copyButton.frame, to: self)
+        let button = header.copyButton.convert(header.copyButton.bounds, to: self)
         return button.maxX > background.frame.maxX - 1
             && button.minY < background.frame.minY + 2
             && button.maxX - background.frame.maxX >= 4
@@ -548,6 +585,16 @@ final class PagedEditorView: NSView {
             && button.width <= 32
             && button.height <= 32
     }
+
+    /// The text view reports the pointing hand over a chip icon (not its I-beam).
+    func textViewUsesPointerOverCopyIcon() -> Bool {
+        guard let button = firstCopyButton() else { return false }
+        let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+        return textView.pointerHotspot?(point) == true
+    }
+
+    var firstCopyButtonSize: CGSize { firstCopyButton()?.bounds.size ?? .zero }
+    var firstCopyButtonIsBorderless: Bool { firstCopyButton()?.isBordered == false }
 
     func copyButtonHitTestSucceeds() -> Bool {
         guard let button = firstCopyButton() else { return false }
@@ -568,12 +615,10 @@ final class PagedEditorView: NSView {
         return hitTest(point) === button
     }
 
-    func tableAddColumnChipHitTestSucceeds() -> Bool {
-        pagesTables.first?.addColumnChipHitTest(in: self) ?? false
-    }
+    var firstTable: PagesTableView? { pagesTables.first }
 
-    func tableGuttersSitOutsideGrid() -> Bool {
-        pagesTables.first?.pagesChromeIsNative() ?? false
+    func tableHasOnlyGitHubGrid() -> Bool {
+        pagesTables.first?.hasOnlyGitHubGrid ?? false
     }
 
     func tableCoversHiddenSource() -> Bool {
@@ -588,14 +633,8 @@ final class PagedEditorView: NSView {
     var firstTableSliceCount: Int { pagesTables.first?.sliceCount ?? 0 }
     var firstTableRepeatsHeader: Bool { pagesTables.first?.continuationRepeatsHeader ?? false }
 
-    func clickFirstTableAddRow() { pagesTables.first?.clickAddRow() }
-    func clickFirstTableAddColumn() { pagesTables.first?.clickAddColumn() }
-    func clickFirstTableDeleteRow() { pagesTables.first?.clickDeleteRow() }
-    func clickFirstTableDeleteColumn() { pagesTables.first?.clickDeleteColumn() }
     func pressFirstTableTab() { pagesTables.first?.pressTab() }
     func pressFirstTableReturn() { pagesTables.first?.pressReturn() }
-    func selectFirstTableRow(_ row: Int) { pagesTables.first?.selectRow(row) }
-    func selectFirstTableColumn(_ column: Int) { pagesTables.first?.selectColumn(column) }
     func focusFirstTableCell(row: Int, column: Int) {
         pagesTables.first?.focusCell(row: row, column: column, stealFocus: true)
     }
@@ -748,6 +787,11 @@ final class PagedEditorView: NSView {
         return true
     }
 
+    /// Menu commands (Format → Table) commit the focused cell first, then work on fresh coordinates.
+    private func commitFocusedTableCell() {
+        pagesTables.first(where: { $0.containsResponder(window?.firstResponder) })?.commitPendingEdit()
+    }
+
     func focusedTableCell() -> TableMutator.CellRef? {
         if let overlay = pagesTables.first(where: { $0.containsResponder(window?.firstResponder) }) {
             return TableMutator.CellRef(block: overlay.block, row: overlay.selectedRow, column: overlay.selectedColumn)
@@ -778,24 +822,28 @@ final class PagedEditorView: NSView {
     }
 
     func insertTableRow(_ placement: RowPlacement) {
+        commitFocusedTableCell()
         guard let cell = focusedTableCell(),
               let result = TableMutator.insertRow(source: textView.string, cell: cell, placement: placement) else { return }
         applyTableEdit(result)
     }
 
     func insertTableColumn(_ placement: ColumnPlacement) {
+        commitFocusedTableCell()
         guard let cell = focusedTableCell(),
               let result = TableMutator.insertColumn(source: textView.string, cell: cell, placement: placement) else { return }
         applyTableEdit(result)
     }
 
     func deleteTableRow() {
+        commitFocusedTableCell()
         guard let cell = focusedTableCell(),
               let result = TableMutator.deleteRow(source: textView.string, cell: cell) else { return }
         applyTableEdit(result)
     }
 
     func deleteTableColumn() {
+        commitFocusedTableCell()
         guard let cell = focusedTableCell(),
               let result = TableMutator.deleteColumn(source: textView.string, cell: cell) else { return }
         applyTableEdit(result)
@@ -811,6 +859,9 @@ final class PagedEditorView: NSView {
 
     private func applyTableEdit(_ result: EditResult) {
         rememberFocus(result)
+        // The edited cell was already committed; detach it so resigning focus during the edit
+        // cannot commit its stale text into the new table shape.
+        pagesTables.forEach { $0.detachEditingField() }
         textView.applyEdit(result)
         relayout()
         restoreTableFieldFocus()
@@ -983,6 +1034,18 @@ extension PagedEditorView: @MainActor PagesTableDelegate {
         tableFocus = nil
         textView.applyEdit(result)
         relayout()
+    }
+
+    func pagesTable(_ view: PagesTableView, moveRow from: Int, to: Int) {
+        let cell = TableMutator.CellRef(block: view.block, row: from, column: view.selectedColumn)
+        guard let result = TableMutator.moveRow(source: textView.string, cell: cell, to: to) else { return }
+        applyTableEdit(result)
+    }
+
+    func pagesTable(_ view: PagesTableView, moveColumn from: Int, to: Int) {
+        let cell = TableMutator.CellRef(block: view.block, row: view.selectedRow, column: from)
+        guard let result = TableMutator.moveColumn(source: textView.string, cell: cell, to: to) else { return }
+        applyTableEdit(result)
     }
 
     func pagesTableDidChangeFocus(_ view: PagesTableView) {

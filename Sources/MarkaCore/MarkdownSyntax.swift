@@ -522,6 +522,13 @@ public enum MarkdownSyntax {
 
     // MARK: - Inline
 
+    /// Inline spans only (bold, italic, strike, code, links, images) — for text that is not a block,
+    /// such as a table cell, where "# x" or "- x" must not turn into a heading or list.
+    public static func inlineSpans(in text: String) -> [StyleSpan] {
+        let ns = text as NSString
+        return parseInline(ns, range: NSRange(location: 0, length: ns.length))
+    }
+
     static func parseInline(_ ns: NSString, range: NSRange) -> [StyleSpan] {
         guard range.length > 0, NSMaxRange(range) <= ns.length else { return [] }
         var occupied = Array(repeating: false, count: ns.length)
@@ -625,7 +632,11 @@ public enum MarkdownSyntax {
                     while q + mlen <= limit {
                         if match(ns, at: q, marker: m), q == p + mlen || ns.character(at: q - 1) != 92 {
                             let group = NSRange(location: p, length: (q + mlen) - p)
-                            if free(group) && group.length > mlen * 2 {
+                            // Only the delimiters must be free: links, images and inline code are
+                            // contiguous groups, so any of them inside the content lies wholly inside
+                            // (**[readme](README.md)**, **`Marka.dmg`**, *`Marka.dmg`*).
+                            if free(NSRange(location: p, length: mlen)), free(NSRange(location: q, length: mlen)),
+                               group.length > mlen * 2 {
                                 spans.append(StyleSpan(range: NSRange(location: p, length: mlen), kind: kind, role: .marker, group: group))
                                 spans.append(StyleSpan(range: NSRange(location: p + mlen, length: q - (p + mlen)), kind: kind, role: .content, group: group))
                                 spans.append(StyleSpan(range: NSRange(location: q, length: mlen), kind: kind, role: .marker, group: group))

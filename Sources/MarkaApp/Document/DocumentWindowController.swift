@@ -2,14 +2,37 @@ import AppKit
 import MarkaCore
 import UniformTypeIdentifiers
 
-final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSSplitViewDelegate, MarkdownTextViewDelegate {
-    private let split = NSSplitView()
+final class DocumentWindowController: NSWindowController, NSToolbarDelegate, MarkdownTextViewDelegate,
+    NSSharingServicePickerToolbarItemDelegate, FindReplaceTarget {
+    /// Preview-style layout: a real sidebar split item gives the full-height (Liquid Glass on macOS 26+)
+    /// thumbnail pane with the traffic lights on it, and lets `.sidebarTrackingSeparator` track the divider.
+    private let splitController = NSSplitViewController()
+    private var sidebarItem: NSSplitViewItem!
+    private var lastSidebarWidth: CGFloat = 0
     private let sidebar = ThumbnailSidebar()
     private let scroll = NSScrollView()
-    private let status = StatusBarView()
+    private var pageButton: PageNumberButton?
+    private var infoPopover: NSPopover?
+    private var infoController: DocumentInfoViewController?
+    private var cachedStats: (source: String, stats: DocumentStats)?
+    /// Caret's on-screen offset captured before an edit; restored after restyle + relayout settle so
+    /// edits (e.g. retyping a fence language) never move the view. TextKit 2 briefly lays out from
+    /// estimated heights after a full restyle, which used to drift the view by a line per edit.
+    private var editAnchor: CGFloat?
+    private var editAnchorTime: TimeInterval = 0
     private let textView: MarkdownTextView
     private let canvas: PagedEditorView
-    private var zoomAutoButton: NSButton?
+    private var zoomPopup: NSPopUpButton?
+    private var sidebarButton: NSButton?
+    private var tableButton: NSButton?
+    private var findButton: NSButton?
+    private var findPopover: NSPopover?
+    private lazy var findController: FindReplaceViewController = {
+        let controller = FindReplaceViewController()
+        controller.target = self
+        return controller
+    }()
+    private var findHighlights: [NSRange] = []
     private var headingPopup: NSPopUpButton?
     private var codePopup: NSPopUpButton?
     private var formatButtons: [NSToolbarItem.Identifier: NSButton] = [:]
@@ -17,14 +40,11 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
     private var settingsController: SettingsWindowController?
     private var tablePickerPopover: NSPopover?
     private var isRefreshingToolbar = false
-    private var restoredSidebarWidth: CGFloat = 140
-    private var sidebarDisplayWidth: CGFloat = 140
-    private var sidebarAnimating = false
-    private var sidebarAnimFrom: CGFloat = 0
-    private var sidebarAnimTo: CGFloat = 0
-    private var sidebarAnimStart: TimeInterval = 0
-    private var sidebarAnimationTimer: Timer?
-    private static let sidebarOpenWidth: CGFloat = 140
+    private static let sidebarOpenWidth: CGFloat = 160
+    /// Below ~140 pt the toolbar pushes the thumbnails toggle (it shares the pane with the window
+    /// controls) into the overflow menu. 150 pt keeps it visible with a margin.
+    static let sidebarMinWidth: CGFloat = 150
+    private static let sidebarMaxWidth: CGFloat = 240
     private static let sidebarAnimationDuration: TimeInterval = 0.25
     var mode: EditorMode = .wysiwyg {
         didSet {
@@ -42,24 +62,33 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         super.init(window: nil)
         tv.markdownDelegate = self
         canvas.onPagesChanged = { [weak self] _ in
+            self?.restoreEditAnchor()
             self?.refreshThumbnails(debounce: true)
             self?.refreshStatus()
         }
         canvas.onEditContextChanged = { [weak self] in
             self?.refreshFormatToolbar()
+            self?.refreshInfoPopover()
         }
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 760),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+        let contentSize = NSSize(width: 1100, height: 760)
+        let window = DocumentWindow(
+            contentRect: NSRect(origin: .zero, size: contentSize),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.minSize = NSSize(width: 640, height: 420)
         window.title = "Marka"
         window.toolbarStyle = .unified
-        window.tabbingMode = .automatic
+        // Native window tabs: on macOS 26+ the system tab bar already has Preview's rounded glass look.
+        // `.preferred`: new documents always join the current window as a tab (Preview-like),
+        // regardless of System Settings → "Prefer tabs when opening documents".
+        window.tabbingMode = .preferred
+        window.tabbingIdentifier = "sk.lubino.marka.document"
         self.window = window
-        window.contentView = buildContent()
+        buildSplit(size: contentSize)
+        window.contentViewController = splitController
+        window.setContentSize(contentSize)
         configureToolbar(window)
         _ = window.toolbar?.items
         applySettings()
@@ -67,7 +96,12 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged), name: SettingsStore.didChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(scrollChanged), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         NotificationCenter.default.addObserver(self, selector: #selector(windowResized), name: NSWindow.didResizeNotification, object: window)
-        NotificationCenter.default.addObserver(self, selector: #selector(windowWillCloseNote), name: NSWindow.willCloseNotification, object: window)
+        NotificationCenter.default.addObserver(self, selector: #selector(splitResized), name: NSSplitView.didResizeSubviewsNotification, object: splitController.splitView)
+        NotificationCenter.default.addObserver(self, selector: #selector(liveMagnifyEnded), name: NSScrollView.didEndLiveMagnifyNotification, object: scroll)
+        // Auto zoom follows the editor's own width (sidebar slide, divider drag, window resize).
+        scroll.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(editorFrameChanged), name: NSView.frameDidChangeNotification, object: scroll)
+        NotificationCenter.default.addObserver(self, selector: #selector(syncTabBar), name: NSWindow.didBecomeKeyNotification, object: window)
         scroll.contentView.postsBoundsChangedNotifications = true
         scroll.minMagnification = 0.25
         scroll.maxMagnification = 4
@@ -75,7 +109,27 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         DispatchQueue.main.async { [weak self] in
             self?.applyZoomFromSettings(persist: false)
             self?.focusEditor()
+            self?.syncTabBar()
         }
+    }
+
+    /// New documents join the frontmost document window as a tab (Preview-like). AppKit's automatic
+    /// tabbing depends on System Settings and on key-window timing, so attach explicitly.
+    override func showWindow(_ sender: Any?) {
+        if let window, window.tabbedWindows == nil || window.tabbedWindows?.count == 1,
+           let host = Self.tabHost(excluding: window) {
+            host.addTabbedWindow(window, ordered: .above)
+        }
+        super.showWindow(sender)
+        DocumentWindow.syncAllTabBars()
+    }
+
+    private static func tabHost(excluding window: NSWindow) -> NSWindow? {
+        let candidates = NSApp.orderedWindows.filter {
+            $0 !== window && $0 is DocumentWindow && $0.isVisible && $0.tabbingIdentifier == window.tabbingIdentifier
+        }
+        if let main = NSApp.mainWindow, candidates.contains(where: { $0 === main }) { return main }
+        return candidates.first
     }
 
     required init?(coder: NSCoder) {
@@ -117,6 +171,39 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         refreshFormatToolbar()
     }
 
+    func markdownTextViewWillChange(_ view: MarkdownTextView) {
+        // A fresh edit takes a new anchor unless one from this same burst is still settling.
+        let now = ProcessInfo.processInfo.systemUptime
+        if editAnchor != nil, now - editAnchorTime < 1 { return }
+        editAnchor = nil
+        let offset = caretScreenOffset()
+        let visibleHeight = scroll.contentView.bounds.height * scroll.magnification
+        // Only anchor when the caret is on screen; otherwise there is nothing the user is looking at.
+        if offset >= 0, offset <= visibleHeight {
+            editAnchor = offset
+            editAnchorTime = now
+        }
+    }
+
+    /// Caret line's distance from the top of the clip view, in screen points.
+    private func caretScreenOffset() -> CGFloat {
+        let y = canvas.caretY(at: textView.selectedRange().location)
+        let inCanvas = textView.convert(NSPoint(x: 0, y: y), to: canvas)
+        return (inCanvas.y - scroll.contentView.bounds.minY) * scroll.magnification
+    }
+
+    private func restoreEditAnchor() {
+        guard let anchor = editAnchor else { return }
+        if !canvas.hasPendingRelayout { editAnchor = nil }
+        let delta = caretScreenOffset() - anchor
+        guard abs(delta) > 0.5 else { return }
+        let clip = scroll.contentView
+        var origin = clip.bounds.origin
+        origin.y += delta / scroll.magnification
+        clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
+        scroll.reflectScrolledClipView(clip)
+    }
+
     func markdownTextView(_ view: MarkdownTextView, didRequestRelayout: Void) {
         canvas.queueRelayout()
     }
@@ -124,6 +211,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
     func markdownTextViewDidChangeSelection(_ view: MarkdownTextView) {
         canvas.refreshLinkCard()
         refreshFormatToolbar()
+        refreshInfoPopover()
     }
 
     func markdownTextViewDidRequestLinkCard(_ view: MarkdownTextView) {
@@ -131,19 +219,42 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         canvas.refreshLinkCard()
     }
 
-    private func buildContent() -> NSView {
-        let root = NSView()
+    private func buildSplit(size: NSSize) {
+        splitController.view.frame = NSRect(origin: .zero, size: size)
+        let split = splitController.splitView
         split.isVertical = true
         split.dividerStyle = .thin
-        split.delegate = self
-        sidebar.provider = { [weak self] page in
-            guard let self else { return nil }
-            return self.canvas.snapshot(page: page, size: self.sidebar.thumbnailImageSize)
+        sidebar.provider = { [weak self] page, size in
+            self?.canvas.snapshot(page: page, size: size)
         }
         sidebar.onSelectPage = { [weak self] page in
             guard let self else { return }
             self.canvas.scrollToPage(page, in: self.scroll)
         }
+        let sidebarController = NSViewController()
+        sidebar.frame = NSRect(x: 0, y: 0, width: Self.sidebarOpenWidth, height: size.height)
+        sidebarController.view = sidebar
+        let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarController)
+        sidebarItem.minimumThickness = Self.sidebarMinWidth
+        sidebarItem.maximumThickness = Self.sidebarMaxWidth
+        sidebarItem.canCollapse = true
+        sidebarItem.allowsFullHeightLayout = true
+        self.sidebarItem = sidebarItem
+
+        let editorController = NSViewController()
+        editorController.view = buildEditorColumn()
+        editorController.view.frame = NSRect(x: 0, y: 0, width: size.width - Self.sidebarOpenWidth, height: size.height)
+        let editorItem = NSSplitViewItem(viewController: editorController)
+        editorItem.minimumThickness = 320
+
+        splitController.addSplitViewItem(sidebarItem)
+        splitController.addSplitViewItem(editorItem)
+        splitController.view.layoutSubtreeIfNeeded()
+        split.setPosition(Self.sidebarOpenWidth, ofDividerAt: 0)
+    }
+
+    private func buildEditorColumn() -> NSView {
+        let root = NSView()
         let clip = CenteringClipView()
         clip.drawsBackground = true
         clip.backgroundColor = Theme.canvasColor(darkPaper: SettingsStore.shared.current.darkPaper)
@@ -158,32 +269,23 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         scroll.maxMagnification = 4.0
         scroll.drawsBackground = true
         scroll.backgroundColor = Theme.canvasColor(darkPaper: SettingsStore.shared.current.darkPaper)
-        split.addArrangedSubview(sidebar)
-        split.addArrangedSubview(scroll)
-        split.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
-        split.setHoldingPriority(.defaultLow, forSubviewAt: 1)
-        split.clipsToBounds = true
-        sidebar.clipsToBounds = true
+        // The editor runs under the (semi-transparent) toolbar; insets keep the first page below it.
+        scroll.automaticallyAdjustsContentInsets = true
 
-        let column = NSStackView(views: [split, status])
-        column.orientation = .vertical
-        column.spacing = 0
-        column.translatesAutoresizingMaskIntoConstraints = false
-        status.translatesAutoresizingMaskIntoConstraints = false
-        split.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(column)
+        // No bottom status bar: page, counts and file info live in the toolbar page-number popover.
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(scroll)
         NSLayoutConstraint.activate([
-            column.topAnchor.constraint(equalTo: root.topAnchor),
-            column.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            column.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            column.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            status.heightAnchor.constraint(equalToConstant: 24)
+            scroll.topAnchor.constraint(equalTo: root.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor)
         ])
         return root
     }
 
     private func configureToolbar(_ window: NSWindow) {
-        let toolbar = NSToolbar(identifier: "sk.lubino.marka.toolbar.v2")
+        let toolbar = NSToolbar(identifier: "sk.lubino.marka.toolbar.v7")
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = true
@@ -195,7 +297,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         [
             .sidebar, .sidebarTrackingSeparator,
             .heading, .bold, .italic, .strike, .lists, .link, .code, .table, .image,
-            .flexibleSpace, .undo, .redo, .find, .share, .zoom, .exportPDF
+            .flexibleSpace, .pageInfo, .undo, .redo, .find, .share, .print, .zoom, .exportPDF
         ]
     }
 
@@ -206,9 +308,30 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch itemIdentifier {
         case .sidebarTrackingSeparator:
-            return NSToolbarItem(itemIdentifier: .sidebarTrackingSeparator)
+            return NSTrackingSeparatorToolbarItem(
+                identifier: .sidebarTrackingSeparator,
+                splitView: splitController.splitView,
+                dividerIndex: 0
+            )
         case .sidebar:
-            return buttonItem(itemIdentifier, title: "Sidebar", symbol: "sidebar.left", action: #selector(toggleSidebar))
+            // Lives over the thumbnail pane, next to the window controls: it is placed *before*
+            // `.sidebarTrackingSeparator`. Do NOT mark it `isNavigational` — macOS 26 moves navigational
+            // items to the leading edge of the content area (the document header).
+            let button = NSButton(
+                image: NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Thumbnails") ?? NSImage(),
+                target: self,
+                action: #selector(toggleSidebar)
+            )
+            button.bezelStyle = .toolbar
+            button.refusesFirstResponder = true
+            button.toolTip = "Show or hide thumbnails"
+            sidebarButton = button
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.view = button
+            item.label = "Thumbnails"
+            item.paletteLabel = "Thumbnails"
+            item.visibilityPriority = .user
+            return item
         case .heading:
             let popup = NSPopUpButton()
             popup.addItems(withTitles: ["Paragraph", "Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5", "Heading 6"])
@@ -263,7 +386,22 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
             popup.frame.size = NSSize(width: max(52, popup.frame.width), height: 24)
             return item
         case .table:
-            return buttonItem(itemIdentifier, title: "Table", symbol: "tablecells", action: #selector(tableAction(_:)))
+            // View-based so the Pages-style gallery can anchor under the button.
+            let button = NSButton(
+                image: NSImage(systemSymbolName: "tablecells", accessibilityDescription: "Table") ?? NSImage(),
+                target: self,
+                action: #selector(tableAction(_:))
+            )
+            button.bezelStyle = .toolbar
+            button.refusesFirstResponder = true
+            button.toolTip = "Insert table"
+            tableButton = button
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.view = button
+            item.label = "Table"
+            item.paletteLabel = "Table"
+            actionItems[itemIdentifier] = item
+            return item
         case .image:
             return buttonItem(itemIdentifier, title: "Image", symbol: "photo", action: #selector(imageAction))
         case .undo:
@@ -271,38 +409,78 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         case .redo:
             return buttonItem(itemIdentifier, title: "Redo", symbol: "arrow.uturn.forward", action: #selector(redoAction))
         case .find:
-            return buttonItem(itemIdentifier, title: "Find", symbol: "magnifyingglass", action: #selector(findAction))
-        case .share:
-            return buttonItem(itemIdentifier, title: "Share", symbol: "square.and.arrow.up", action: #selector(shareAction(_:)))
-        case .zoom:
-            let wrap = NSStackView()
-            wrap.orientation = .horizontal
-            wrap.spacing = 2
-            wrap.alignment = .centerY
-            let minus = zoomToolButton(
-                image: NSImage(systemSymbolName: "minus.magnifyingglass", accessibilityDescription: "Zoom Out"),
-                tooltip: "Zoom Out",
-                action: #selector(zoomOut)
+            // View-based so the search & replace popover anchors under the button.
+            let button = NSButton(
+                image: NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Find") ?? NSImage(),
+                target: self,
+                action: #selector(findAction)
             )
-            let auto = zoomToolButton(
-                image: ZoomGlyph.autoImage(),
-                tooltip: "Auto Width",
-                action: #selector(zoomAuto)
-            )
-            auto.setButtonType(.pushOnPushOff)
-            zoomAutoButton = auto
-            let plus = zoomToolButton(
-                image: NSImage(systemSymbolName: "plus.magnifyingglass", accessibilityDescription: "Zoom In"),
-                tooltip: "Zoom In",
-                action: #selector(zoomIn)
-            )
-            wrap.addArrangedSubview(minus)
-            wrap.addArrangedSubview(auto)
-            wrap.addArrangedSubview(plus)
+            button.bezelStyle = .toolbar
+            button.refusesFirstResponder = true
+            button.toolTip = "Find and Replace (⌘F)"
+            findButton = button
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.view = wrap
+            item.view = button
+            item.label = "Find"
+            item.paletteLabel = "Find"
+            return item
+        case .share:
+            // The system share item: AppKit anchors the picker under the button and runs it exactly
+            // like Finder / Preview (services, AirDrop, recent people, "Edit Extensions…").
+            let item = NSSharingServicePickerToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Share"
+            item.paletteLabel = "Share"
+            item.toolTip = "Share this document"
+            item.delegate = self
+            return item
+        case .zoom:
+            // One Keynote-style pull-down: the title shows the current zoom ("70 %"), the menu lists
+            // the presets, then the fit modes with a checkmark on the active one.
+            let popup = NSPopUpButton(frame: .zero, pullsDown: true)
+            popup.bezelStyle = .toolbar
+            popup.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+            popup.refusesFirstResponder = true
+            popup.toolTip = "Zoom"
+            let menu = popup.menu ?? NSMenu()
+            menu.autoenablesItems = false
+            menu.addItem(withTitle: "100 %", action: nil, keyEquivalent: "")   // pull-down title item
+            for step in PageGeometry.zoomSteps {
+                let item = menu.addItem(withTitle: Self.percentString(step), action: #selector(zoomPresetChosen(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = NSNumber(value: Double(step))
+            }
+            menu.addItem(.separator())
+            let auto = menu.addItem(withTitle: "Auto", action: #selector(zoomAuto), keyEquivalent: "")
+            auto.target = self
+            auto.identifier = NSUserInterfaceItemIdentifier("zoom.auto")
+            popup.menu = menu
+            popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 78).isActive = true
+            zoomPopup = popup
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.view = popup
             item.label = "Zoom"
             item.paletteLabel = "Zoom"
+            item.visibilityPriority = .high
+            refreshZoomLabel()
+            return item
+        case .pageInfo:
+            let button = PageNumberButton(target: self, action: #selector(showDocumentInfo(_:)))
+            pageButton = button
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.view = button
+            item.label = "Page"
+            item.paletteLabel = "Page & Document Info"
+            item.toolTip = "Page number — click for document info"
+            item.visibilityPriority = .high
+            return item
+        case .print:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Print"
+            item.paletteLabel = "Print"
+            item.toolTip = "Print (⌘P)"
+            item.image = NSImage(systemSymbolName: "printer", accessibilityDescription: "Print")
+            item.action = #selector(NSDocument.printDocument(_:))   // responder chain → the document
+            item.isBordered = true
             return item
         case .exportPDF:
             return buttonItem(itemIdentifier, title: "PDF", symbol: "arrow.down.document", action: #selector(exportPDF))
@@ -321,20 +499,6 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         item.isBordered = true
         actionItems[id] = item
         return item
-    }
-
-    private func zoomToolButton(image: NSImage?, tooltip: String, action: Selector) -> NSButton {
-        let button = NSButton()
-        button.image = image
-        button.imagePosition = .imageOnly
-        button.bezelStyle = .texturedRounded
-        button.isBordered = true
-        button.target = self
-        button.action = action
-        button.toolTip = tooltip
-        button.frame.size = NSSize(width: 32, height: 24)
-        button.refusesFirstResponder = true
-        return button
     }
 
     private func toggleItem(_ id: NSToolbarItem.Identifier, title: String, symbol: String, action: Selector) -> NSToolbarItem {
@@ -388,6 +552,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         formatButtons[.link]?.isEnabled = available.link
         codePopup?.isEnabled = available.inlineCode || available.codeBlock
         actionItems[.table]?.isEnabled = available.table
+        tableButton?.isEnabled = available.table
         actionItems[.image]?.isEnabled = available.image
     }
 
@@ -396,102 +561,48 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
             ?? NSImage(systemSymbolName: fallback, accessibilityDescription: nil)
     }
 
-    func splitView(_ splitView: NSSplitView, canCollapse subview: NSView) -> Bool {
-        subview === sidebar
+    private var lastEditorWidth: CGFloat = 0
+
+    @objc private func editorFrameChanged() {
+        let width = scroll.frame.width
+        guard abs(width - lastEditorWidth) > 0.5 else { return }
+        lastEditorWidth = width
+        applyFitWidthIfNeeded()
     }
 
-    func splitView(_ splitView: NSSplitView, shouldHideDividerAt dividerIndex: Int) -> Bool {
-        sidebarDisplayWidth < 1
-    }
-
-    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        sidebarDisplayWidth < 1 ? 0 : 120
-    }
-
-    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        sidebarDisplayWidth < 1 ? 0 : min(proposedMaximumPosition, 240)
-    }
-
-    func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
-        layoutSplitPanes()
-    }
-
-    func splitViewDidResizeSubviews(_ notification: Notification) {
-        if !sidebarAnimating, sidebarDisplayWidth > 80, sidebar.frame.width > 80 {
-            restoredSidebarWidth = sidebar.frame.width
-            sidebarDisplayWidth = sidebar.frame.width
-        }
-    }
-
-    func layoutSplitPanes() {
-        let bounds = split.bounds
-        let sideW = max(0, sidebarDisplayWidth)
-        let divider: CGFloat = sideW < 1 ? 0 : split.dividerThickness
-        sidebar.frame = NSRect(x: bounds.minX, y: bounds.minY, width: sideW, height: bounds.height)
-        let x = bounds.minX + sideW + divider
-        scroll.frame = NSRect(x: x, y: bounds.minY, width: max(0, bounds.maxX - x), height: bounds.height)
+    @objc private func splitResized() {
+        let width = sidebarItem.isCollapsed ? 0 : sidebar.frame.width
+        guard abs(width - lastSidebarWidth) > 0.5 else { return }
+        lastSidebarWidth = width
+        // Auto zoom follows the editor width while the sidebar slides or is dragged.
+        // Thumbnails are NOT re-rendered here: the sidebar scales its cached bitmaps on the GPU
+        // and re-renders once at the new size after the drag settles.
+        applyFitWidthIfNeeded()
     }
 
     func applySidebarVisibility(animated: Bool = false) {
-        let show = SettingsStore.shared.current.showSidebar
-        if show {
-            restoredSidebarWidth = max(restoredSidebarWidth, Self.sidebarOpenWidth)
-        } else if sidebar.frame.width > 80 {
-            restoredSidebarWidth = sidebar.frame.width
-        }
-        let target: CGFloat = show ? min(max(restoredSidebarWidth, 120), 240) : 0
-        let from = max(0, sidebar.frame.width)
-        sidebarAnimationTimer?.invalidate()
-        sidebarAnimationTimer = nil
-        if !animated || abs(from - target) < 0.5 {
-            finishSidebarAnimation(width: target, shown: show)
-            return
-        }
-        sidebar.isHidden = false
-        sidebarAnimating = true
-        sidebarAnimFrom = from
-        sidebarAnimTo = target
-        sidebarAnimStart = ProcessInfo.processInfo.systemUptime
-        sidebarDisplayWidth = from
-        layoutSplitPanes()
-        let timer = Timer(timeInterval: 1.0 / 60.0, target: self, selector: #selector(tickSidebarAnimation), userInfo: nil, repeats: true)
-        RunLoop.main.add(timer, forMode: .common)
-        sidebarAnimationTimer = timer
-        tickSidebarAnimation()
-    }
-
-    @objc private func tickSidebarAnimation() {
-        let duration = Self.sidebarAnimationDuration
-        let t = min(1, CGFloat((ProcessInfo.processInfo.systemUptime - sidebarAnimStart) / duration))
-        let eased = Self.easeInOut(t)
-        sidebarDisplayWidth = sidebarAnimFrom + (sidebarAnimTo - sidebarAnimFrom) * eased
-        layoutSplitPanes()
-        applyFitWidthIfNeeded()
-        split.needsDisplay = true
-        if t >= 1 {
-            finishSidebarAnimation(width: sidebarAnimTo, shown: sidebarAnimTo >= 1)
+        let collapse = !SettingsStore.shared.current.showSidebar
+        guard sidebarItem.isCollapsed != collapse else { return }
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = Self.sidebarAnimationDuration
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                context.allowsImplicitAnimation = true
+                sidebarItem.animator().isCollapsed = collapse
+            } completionHandler: { [weak self] in
+                self?.applyFitWidthIfNeeded()
+            }
+        } else {
+            sidebarItem.isCollapsed = collapse
+            splitController.view.layoutSubtreeIfNeeded()
+            applyFitWidthIfNeeded()
         }
     }
 
-    private func finishSidebarAnimation(width: CGFloat, shown: Bool) {
-        sidebarAnimationTimer?.invalidate()
-        sidebarAnimationTimer = nil
-        sidebarAnimating = false
-        sidebarDisplayWidth = width
-        sidebar.isHidden = !shown
-        layoutSplitPanes()
-        applyFitWidthIfNeeded()
-        window?.invalidateCursorRects(for: split)
-    }
-
-    private static func easeInOut(_ t: CGFloat) -> CGFloat {
-        t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2
-    }
-
-    var testSidebarWidth: CGFloat { sidebar.frame.width }
-    var testSidebarHidden: Bool { sidebar.isHidden }
-    var testEditorFrame: NSRect { scroll.convert(scroll.bounds, to: split) }
-    var testSplitBounds: NSRect { split.bounds }
+    var testSidebarWidth: CGFloat { sidebarItem.isCollapsed ? 0 : sidebar.frame.width }
+    var testSidebarHidden: Bool { sidebarItem.isCollapsed }
+    var testEditorFrame: NSRect { scroll.convert(scroll.bounds, to: splitController.splitView) }
+    var testSplitBounds: NSRect { splitController.splitView.bounds }
     var testCodeHeaderCount: Int { canvas.codeHeaderCount }
     var testCodeBackgroundCount: Int { canvas.codeBackgroundCount }
     var testCodeBackgroundsStayOnPages: Bool { canvas.codeBackgroundsStayOnPages() }
@@ -505,8 +616,139 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
     var testLinkCardURL: String { canvas.linkCardURL }
     var testCopyPopupIsTopRight: Bool { canvas.copyPopupIsTopRight() }
     var testCopyButtonHitTestSucceeds: Bool { canvas.copyButtonHitTestSucceeds() }
+    var testTextViewPointerOverCopyIcon: Bool { canvas.textViewUsesPointerOverCopyIcon() }
+    var testCopyButtonSize: CGSize { canvas.firstCopyButtonSize }
+    var testInlineCodeBoxes: [CGRect] { textView.inlineCodeBoxRects() }
+    func testPDFLinks(documentDirectory: URL?) -> [(page: Int, url: String, rect: CGRect)] {
+        canvas.documentDirectory = documentDirectory
+        guard let data = PDFExporter.data(from: canvas) else { return [] }
+        return PDFExporter.linkAnnotations(in: data)
+    }
+    /// Characters in `range` that would be visible in the text view (not clear, or a real font size).
+    func testVisibleSourceCharacters(in range: NSRange) -> [String] {
+        guard let storage = textView.textStorage, NSMaxRange(range) <= storage.length else { return ["<range>"] }
+        var visible: [String] = []
+        let ns = storage.string as NSString
+        for i in range.location..<NSMaxRange(range) {
+            let ch = ns.substring(with: NSRange(location: i, length: 1))
+            if ch == "\n" { continue }
+            let color = storage.attribute(.foregroundColor, at: i, effectiveRange: nil) as? NSColor
+            let font = storage.attribute(.font, at: i, effectiveRange: nil) as? NSFont
+            let clear = (color?.alphaComponent ?? 1) < 0.01
+            let tiny = (font?.pointSize ?? 12) < 1
+            if !(clear && tiny) { visible.append(ch) }
+        }
+        return visible
+    }
+    /// (bold, italic, monospaced) of the font at a source offset.
+    func testFontTraits(at location: Int) -> (bold: Bool, italic: Bool, mono: Bool) {
+        guard let font = textView.textStorage?.attribute(.font, at: location, effectiveRange: nil) as? NSFont else { return (false, false, false) }
+        let traits = font.fontDescriptor.symbolicTraits
+        return (traits.contains(.bold), traits.contains(.italic), traits.contains(.monoSpace))
+    }
+    /// Rendered brightness (0…1) at a point in text-view coordinates (draws the canvas off-screen).
+    func testRenderedLuminance(atTextViewPoint point: NSPoint) -> CGFloat? {
+        let inCanvas = textView.convert(point, to: canvas)
+        let area = NSRect(x: inCanvas.x - 4, y: inCanvas.y - 4, width: 8, height: 8)
+        guard let rep = canvas.bitmapImageRepForCachingDisplay(in: area) else { return nil }
+        canvas.cacheDisplay(in: area, to: rep)
+        let px = rep.pixelsWide / 2, py = rep.pixelsHigh / 2
+        guard let color = rep.colorAt(x: px, y: py)?.usingColorSpace(.sRGB) else { return nil }
+        return (color.redComponent + color.greenComponent + color.blueComponent) / 3
+    }
+    /// Foreground colour at a source offset, as sRGB hex ("CF222E").
+    func testForegroundHex(at location: Int) -> String? {
+        guard let storage = textView.textStorage, location < storage.length,
+              let color = storage.attribute(.foregroundColor, at: location, effectiveRange: nil) as? NSColor,
+              let rgb = color.usingColorSpace(.sRGB) else { return nil }
+        return String(format: "%02X%02X%02X", Int((rgb.redComponent * 255).rounded()), Int((rgb.greenComponent * 255).rounded()), Int((rgb.blueComponent * 255).rounded()))
+    }
+    var testCopyButtonIsBorderless: Bool { canvas.firstCopyButtonIsBorderless }
     var testThumbnailBorderWidth: CGFloat { sidebar.testFirstPageBorderWidth }
     var testThumbnailAspect: CGFloat { sidebar.testFirstPageAspect }
+    var testThumbnailSelectionCornerRadius: CGFloat { sidebar.testSelectionCornerRadius }
+    var testThumbnailSelectionUsesAccentStroke: Bool { sidebar.testSelectionUsesAccentStroke }
+    var testHasFullSizeContent: Bool { window?.styleMask.contains(.fullSizeContentView) ?? false }
+    var testUsesSplitViewController: Bool { window?.contentViewController === splitController }
+    var testSidebarIsSystemSidebar: Bool { sidebarItem.behavior == .sidebar }
+    var testThumbnailSelectionContainsNumber: Bool { sidebar.testSelectionContainsNumber }
+    var testPageButtonTitle: String? { pageButton?.title }
+    var testHasStatusBar: Bool { scroll.superview?.subviews.contains { $0 !== scroll } ?? false }
+    func testDocumentInfo() -> DocumentInfoViewController {
+        let controller = documentInfoController()
+        controller.update(makeDocumentInfo())
+        return controller
+    }
+    var testHighlightedThumbnails: [Int] { sidebar.testHighlightedPages }
+    func testScrollEditorToPage(_ page: Int) { canvas.scrollToPage(page, in: scroll) }
+    /// Top edge of `view` in window coordinates reaches the window's top (under the titlebar).
+    private func reachesWindowTop(_ view: NSView) -> Bool {
+        guard let window else { return false }
+        let frame = view.convert(view.bounds, to: nil)
+        return frame.maxY >= window.frame.height - 1.5
+    }
+    var testSidebarReachesWindowTop: Bool { reachesWindowTop(sidebar) }
+    var testEditorRunsUnderToolbar: Bool { reachesWindowTop(scroll) }
+    var testEditorTopInset: CGFloat { scroll.contentInsets.top }
+    var testThumbnailBelowTitlebar: Bool {
+        guard let window else { return false }
+        let page = sidebar.firstPageRectInView(sidebar)
+        let inWindow = sidebar.convert(page, to: nil)
+        return inWindow.maxY <= window.contentLayoutRect.maxY + 1.5
+    }
+    var testThumbnailCenteredInPane: Bool { sidebar.testPageCenteredInUsableWidth }
+    var testThumbnailUsesSystemScrollers: Bool { sidebar.testUsesSystemScrollerStyle }
+    var testThumbnailHorizontalOverflow: CGFloat { sidebar.testHorizontalOverflow }
+    var testWindowSupportsNativeTabs: Bool {
+        guard let window else { return false }
+        return window.tabbingMode == .preferred && window.tabbingIdentifier == "sk.lubino.marka.document"
+    }
+    var testTabBarVisible: Bool { window?.tabGroup?.isTabBarVisible ?? false }
+    var testHasPageControl: Bool { window?.toolbar?.items.contains { $0.itemIdentifier == .pageInfo } ?? false }
+    var testCaretPage: Int { canvas.pageIndex(forCharacterAt: textView.selectedRange().location) + 1 }
+    var testVisiblePage: Int { canvas.visiblePageIndex(in: scroll.contentView.bounds) + 1 }
+    var testThumbnailRenderCount: Int { sidebar.renderCount }
+    func testSetSidebarWidth(_ width: CGFloat) {
+        splitController.splitView.setPosition(width, ofDividerAt: 0)
+        splitController.splitView.layoutSubtreeIfNeeded()
+    }
+    func testBeginSidebarLiveResize() { sidebar.viewWillStartLiveResize() }
+    func testEndSidebarLiveResize() { sidebar.viewDidEndLiveResize() }
+    var testThumbnailPageWidth: CGFloat { sidebar.testFirstPageWidth }
+    var testThumbnailHasImage: Bool { sidebar.testFirstPageHasImage }
+    var testHasSidebarTrackingSeparator: Bool {
+        window?.toolbar?.items.contains { $0.itemIdentifier == .sidebarTrackingSeparator } ?? false
+    }
+    var testTitleFollowsSidebarSeparator: Bool {
+        let ids = window?.toolbar?.items.map(\.itemIdentifier) ?? []
+        guard let side = ids.firstIndex(of: .sidebar),
+              let sep = ids.firstIndex(of: .sidebarTrackingSeparator) else { return false }
+        return sep == side + 1
+    }
+    var testSidebarItemIsNavigational: Bool {
+        window?.toolbar?.items.first { $0.itemIdentifier == .sidebar }?.isNavigational ?? true
+    }
+    /// The sidebar button is the only item in the toolbar's sidebar section (before the tracking separator).
+    /// Sidebar toggle is on screen (not in the overflow menu), right of the traffic lights and not under them.
+    var testSidebarButtonVisibleNextToWindowControls: (visible: Bool, gap: CGFloat) {
+        guard let window, let button = sidebarButton, button.window === window, !button.isHiddenOrHasHiddenAncestor,
+              let zoom = window.standardWindowButton(.zoomButton) else { return (false, .infinity) }
+        let buttonFrame = button.convert(button.bounds, to: nil)
+        let zoomFrame = zoom.convert(zoom.bounds, to: nil)
+        return (buttonFrame.width > 1 && buttonFrame.minX >= zoomFrame.maxX - 0.5, buttonFrame.minX - zoomFrame.maxX)
+    }
+    var testSidebarButtonInSidebarSection: Bool {
+        let ids = window?.toolbar?.items.map(\.itemIdentifier) ?? []
+        guard let separator = ids.firstIndex(of: .sidebarTrackingSeparator) else { return false }
+        return Array(ids[..<separator]) == [.sidebar]
+    }
+    var testInterPageGap: CGFloat { canvas.geometry.interPageGap }
+    var testSettingsWindowShowsFontControls: Bool {
+        if settingsController == nil {
+            settingsController = SettingsWindowController()
+        }
+        return settingsController?.hasFontControls ?? false
+    }
     var testFormat: MarkdownEditing.FormatState { currentFormat() }
     var testHeadingPopupIndex: Int { headingPopup?.indexOfSelectedItem ?? -1 }
     var testBoldToolbarOn: Bool { formatButtons[.bold]?.state == .on }
@@ -521,11 +763,26 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
     var testTableToolbarEnabled: Bool { actionItems[.table]?.isEnabled ?? true }
     var testTablesStayOnPages: Bool { canvas.tablesStayOnPages() }
     var testZoomShowsPercent: Bool { false }
-    var testZoomAutoOn: Bool { zoomAutoButton?.state == .on }
+    var testZoomAutoOn: Bool { zoomCheckedTitle == "Auto" }
+    var testZoomTitle: String { zoomPopup?.itemArray.first?.title ?? "" }
+    var testZoomMenuTitles: [String] { zoomPopup?.itemArray.dropFirst().map(\.title) ?? [] }
+    var zoomCheckedTitle: String? { zoomPopup?.itemArray.dropFirst().first { $0.state == .on }?.title }
+    func testChooseZoomMenuItem(_ title: String) {
+        guard let item = zoomPopup?.itemArray.dropFirst().first(where: { $0.title == title }),
+              let action = item.action else { return }
+        NSApp.sendAction(action, to: item.target, from: item)
+    }
     var testFirstChipShowsRun: Bool { canvas.firstChipShowsRun }
     var testRunButtonHitTestSucceeds: Bool { canvas.runButtonHitTestSucceeds() }
-    var testTableAddColumnChipHitTestSucceeds: Bool { canvas.tableAddColumnChipHitTestSucceeds() }
-    var testTableGuttersSitOutsideGrid: Bool { canvas.tableGuttersSitOutsideGrid() }
+    var testTableHasOnlyGitHubGrid: Bool { canvas.tableHasOnlyGitHubGrid() }
+    var testTableEditChromeVisible: Bool { canvas.firstTable?.isEditingChromeVisible ?? false }
+    func testTableCellDisplay(row: Int, column: Int) -> (text: String, bold: Bool)? { canvas.firstTable?.testCellDisplay(row: row, column: column) }
+    var testTableGripsVisible: (row: Bool, column: Bool) { canvas.firstTable?.testGripsVisible ?? (false, false) }
+    var testTableBarButtonHit: Bool { canvas.firstTable?.testBarButtonHit(in: canvas) ?? false }
+    func testTableBar(_ command: TableEditBar.Command) { canvas.firstTable?.editBar.perform(command) }
+    func testDragTableRow(before row: Int) { canvas.firstTable?.testDragRow(beforeStorageRow: row) }
+    func testDragTableColumn(before column: Int) { canvas.firstTable?.testDragColumn(beforeColumn: column) }
+    var testTableButtonIsViewBased: Bool { tableButton != nil }
     var testTableCoversHiddenSource: Bool { canvas.tableCoversHiddenSource() }
     var testTableSliceCount: Int { canvas.firstTableSliceCount }
     var testTableRepeatsHeader: Bool { canvas.firstTableRepeatsHeader }
@@ -555,14 +812,8 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         canvas.restoreTableFieldFocusForTests()
     }
 
-    func testClickAddTableRow() { canvas.clickFirstTableAddRow() }
-    func testClickAddTableColumn() { canvas.clickFirstTableAddColumn() }
-    func testClickDeleteTableRow() { canvas.clickFirstTableDeleteRow() }
-    func testClickDeleteTableColumn() { canvas.clickFirstTableDeleteColumn() }
     func testPressTableTab() { canvas.pressFirstTableTab() }
     func testPressTableReturn() { canvas.pressFirstTableReturn() }
-    func testSelectTableRow(_ row: Int) { canvas.selectFirstTableRow(row) }
-    func testSelectTableColumn(_ column: Int) { canvas.selectFirstTableColumn(column) }
     func testFocusTableCell(row: Int, column: Int) { canvas.focusFirstTableCell(row: row, column: column) }
 
     var testTableRowCount: Int { canvas.firstTableRowCount }
@@ -615,6 +866,27 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         textView.insertText(string, replacementRange: range)
     }
 
+    /// Caret line's distance from the top of the visible editor area, in screen points.
+    var testCaretScreenOffset: CGFloat {
+        let y = canvas.caretY(at: textView.selectedRange().location)
+        let inCanvas = textView.convert(NSPoint(x: 0, y: y), to: canvas)
+        return (inCanvas.y - scroll.contentView.bounds.minY) * scroll.magnification
+    }
+    /// Scroll so the caret sits `offset` screen points below the top of the clip view.
+    func testScrollCaret(toScreenOffset offset: CGFloat) {
+        let y = canvas.caretY(at: textView.selectedRange().location)
+        let inCanvas = textView.convert(NSPoint(x: 0, y: y), to: canvas)
+        let clip = scroll.contentView
+        let origin = NSPoint(x: clip.bounds.minX, y: inCanvas.y - offset / scroll.magnification)
+        clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
+        scroll.reflectScrolledClipView(clip)
+    }
+    /// Replace `range` the way typing does (one undoable edit through the text view).
+    func testReplace(_ range: NSRange, with string: String) {
+        window?.makeFirstResponder(textView)
+        textView.insertText(string, replacementRange: range)
+    }
+
     var testEditorIsFirstResponder: Bool { window?.firstResponder === textView }
     var testSelectedRange: NSRange { textView.selectedRange() }
 
@@ -662,13 +934,14 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         scroll.contentView.drawsBackground = true
         scroll.contentView.backgroundColor = canvasColor
         textView.applyStyles()
+        applyPageControlVisibility()
         applyZoomFromSettings(persist: false)
         refreshStatus()
     }
 
     @objc private func scrollChanged() {
         refreshStatus()
-        sidebar.currentPage = canvas.visiblePageIndex(in: scroll.contentView.bounds)
+        sidebar.showCurrentPage(canvas.visiblePageIndex(in: scroll.contentView.bounds))
     }
 
     func refreshThumbnails(debounce: Bool) {
@@ -680,17 +953,127 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
     }
 
     func refreshStatus() {
-        let source = textView.string
         let page = canvas.visiblePageIndex(in: scroll.contentView.bounds) + 1
-        status.update(
-            page: page,
-            pageCount: canvas.pageCount,
-            words: TextMetrics.wordCount(source),
-            characters: TextMetrics.characterCount(source),
-            path: (document as? MarkdownDocument)?.fileURL?.path ?? "Untitled"
-        )
+        pageButton?.show(page: page, of: canvas.pageCount)
+        refreshInfoPopover()
         refreshZoomLabel()
         window?.title = (document as? MarkdownDocument)?.displayName ?? "Marka"
+    }
+
+    // MARK: - Page number / document info popover
+
+    /// Counts are only computed while the popover is open, and cached per source string.
+    private func currentStats() -> DocumentStats {
+        let source = textView.string
+        if let cached = cachedStats, cached.source == source { return cached.stats }
+        let stats = DocumentStats.compute(source)
+        cachedStats = (source, stats)
+        return stats
+    }
+
+    @objc private func syncTabBar() {
+        DocumentWindow.syncAllTabBars()
+    }
+
+    /// Adds or removes the toolbar page control to match Settings.
+    private func applyPageControlVisibility() {
+        guard let toolbar = window?.toolbar else { return }
+        let show = SettingsStore.shared.current.showPageControl
+        let index = toolbar.items.firstIndex { $0.itemIdentifier == .pageInfo }
+        if !show, let index {
+            toolbar.removeItem(at: index)
+            pageButton = nil
+        } else if show, index == nil {
+            let before = toolbar.items.firstIndex { $0.itemIdentifier == .undo } ?? toolbar.items.count
+            toolbar.insertItem(withItemIdentifier: .pageInfo, at: before)
+            refreshStatus()
+        }
+    }
+
+    func makeDocumentInfo() -> DocumentInfo {
+        let doc = document as? MarkdownDocument
+        let url = doc?.fileURL
+        var size: Int64?
+        if let url, let attrs = try? FileManager.default.attributesOfItem(atPath: url.path) {
+            size = (attrs[.size] as? NSNumber)?.int64Value
+        }
+        let selected = textView.selectedRanges
+            .map(\.rangeValue)
+            .filter { $0.length > 0 }
+            .map { (textView.string as NSString).substring(with: $0) }
+            .joined(separator: " ")
+        let page = canvas.visiblePageIndex(in: scroll.contentView.bounds) + 1
+        let caret = textView.selectedRange().location
+        let pageRanges = canvas.pageTextRanges()
+        var pageWords = 0
+        if pageRanges.indices.contains(page - 1) {
+            let range = pageRanges[page - 1]
+            let ns = textView.string as NSString
+            if NSMaxRange(range) <= ns.length {
+                pageWords = TextMetrics.wordCount(ns.substring(with: range))
+            }
+        }
+        return DocumentInfo(
+            page: page,
+            pageCount: canvas.pageCount,
+            stats: currentStats(),
+            selectionWords: TextMetrics.wordCount(selected),
+            selectionCharacters: TextMetrics.characterCount(selected),
+            fileURL: url,
+            codec: doc?.codec ?? FileCodec(),
+            isEdited: doc?.isDocumentEdited ?? false,
+            fileSize: size,
+            modified: doc?.fileModificationDate,
+            pageWords: pageWords,
+            caretPage: canvas.pageIndex(forCharacterAt: caret) + 1,
+            wordGoal: SettingsStore.shared.current.wordGoal
+        )
+    }
+
+    private func documentInfoController() -> DocumentInfoViewController {
+        if let infoController { return infoController }
+        let controller = DocumentInfoViewController()
+        controller.onGoToPage = { [weak self] page in
+            self?.goToPage(page)
+        }
+        infoController = controller
+        return controller
+    }
+
+    private func refreshInfoPopover() {
+        guard infoPopover?.isShown == true else { return }
+        infoController?.update(makeDocumentInfo())
+    }
+
+    func goToPage(_ page: Int) {
+        let index = min(max(1, page), canvas.pageCount) - 1
+        canvas.scrollToPage(index, in: scroll)
+        refreshStatus()
+    }
+
+    @objc func showDocumentInfo(_ sender: Any?) {
+        if let popover = infoPopover, popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        let controller = documentInfoController()
+        controller.update(makeDocumentInfo())
+        let popover = NSPopover()
+        popover.contentViewController = controller
+        popover.contentSize = controller.preferredContentSize
+        popover.behavior = .transient
+        infoPopover = popover
+        let anchor: NSView? = (sender as? NSView) ?? pageButton.flatMap { $0.window == nil ? nil : $0 }
+        if let anchor {
+            popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+        } else {
+            let rect = NSRect(x: scroll.bounds.midX, y: scroll.bounds.maxY - 8, width: 1, height: 1)
+            popover.show(relativeTo: rect, of: scroll, preferredEdge: .minY)
+        }
+        // Menu / shortcut entry ("Go to Page…") lands in the page field.
+        if !(sender is NSButton) {
+            controller.focusPageField()
+        }
     }
 
     @objc func toggleSidebar() {
@@ -758,30 +1141,49 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         showTableSizePicker(sender)
     }
 
+    /// Pages-style: the Table button opens a gallery of table shapes; one click inserts it.
     private func showTableSizePicker(_ sender: Any?) {
-        let picker = TableSizePickerView(frame: NSRect(origin: .zero, size: TableSizePickerView.preferredSize))
-        picker.onPick = { [weak self] columns, rows in
-            self?.tablePickerPopover?.performClose(nil)
-            self?.tablePickerPopover = nil
-            self?.textView.applyTable(rows: rows, columns: columns)
-            self?.canvas.relayout()
-            self?.canvas.focusInsertedTable()
-        }
+        let picker = makeTablePicker()
         let controller = NSViewController()
         controller.view = picker
         let popover = NSPopover()
         popover.contentViewController = controller
-        popover.contentSize = TableSizePickerView.preferredSize
+        popover.contentSize = TableStylePickerView.preferredSize
         popover.behavior = .transient
         tablePickerPopover = popover
-        if let view = sender as? NSView {
-            popover.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
-        } else if let item = sender as? NSToolbarItem, let view = item.view {
+        // Toolbar button → under the button; menu (Format → Insert Table) → at the caret.
+        if let view = (sender as? NSView) ?? (tableButton?.window != nil ? tableButton : nil) {
             popover.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
         } else {
-            let caret = NSRect(x: 24, y: 24, width: 8, height: 8)
-            popover.show(relativeTo: caret, of: textView, preferredEdge: .minY)
+            let caret = textView.firstRect(forCharacterRange: textView.selectedRange(), actualRange: nil)
+            let local = textView.window.map { textView.convert($0.convertFromScreen(caret), from: nil) }
+                ?? NSRect(x: 24, y: 24, width: 8, height: 8)
+            popover.show(relativeTo: local.insetBy(dx: 0, dy: -2), of: textView, preferredEdge: .maxY)
         }
+    }
+
+    private func makeTablePicker() -> TableStylePickerView {
+        let picker = TableStylePickerView(frame: NSRect(origin: .zero, size: TableStylePickerView.preferredSize))
+        picker.darkPaper = SettingsStore.shared.current.darkPaper
+        picker.onPick = { [weak self] preset in
+            self?.tablePickerPopover?.performClose(nil)
+            self?.tablePickerPopover = nil
+            self?.insertTable(preset)
+        }
+        return picker
+    }
+
+    private func insertTable(_ preset: TableStylePickerView.Preset) {
+        // `applyTable` counts the header as a row.
+        textView.applyTable(rows: preset.rows + 1, columns: preset.columns)
+        canvas.relayout()
+        canvas.focusInsertedTable()
+        refreshFormatToolbar()
+    }
+
+    /// Picks gallery tile `index` exactly as a click would.
+    func testPickTablePreset(_ index: Int) {
+        makeTablePicker().pick(index)
     }
     @objc func imageAction() { textView.applyImage() }
     @objc func quoteAction() { textView.applyQuote() }
@@ -802,7 +1204,111 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         }
         textView.redoMarkdown()
     }
-    @objc func findAction() { window?.makeFirstResponder(textView); textView.performFindPanelAction(self) }
+    // MARK: - Find & replace
+
+    @objc func findAction() { showFindReplace(focusReplace: false) }
+    @objc func findAndReplaceAction() { showFindReplace(focusReplace: true) }
+    @objc func findNextAction() { findController.findNext() }
+    @objc func findPreviousAction() { findController.findPrevious() }
+
+    func showFindReplace(focusReplace: Bool) {
+        if let popover = findPopover, popover.isShown {
+            focusReplace ? findController.focusReplace() : findController.focusFind()
+            return
+        }
+        let popover = NSPopover()
+        popover.contentViewController = findController
+        popover.behavior = .semitransient
+        popover.delegate = findController
+        findPopover = popover
+        // Seed with the selected text, like the system find bar.
+        let selected = textView.selectedRange()
+        if selected.length > 0, selected.length < 200 {
+            findController.view.layoutSubtreeIfNeeded()
+            findController.findField.stringValue = (textView.string as NSString).substring(with: selected)
+        }
+        if let anchor = findButton, anchor.window != nil {
+            popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+        } else {
+            let rect = NSRect(x: scroll.bounds.maxX - 40, y: scroll.bounds.maxY - 8, width: 1, height: 1)
+            popover.show(relativeTo: rect, of: scroll, preferredEdge: .minY)
+        }
+        focusReplace ? findController.focusReplace() : findController.focusFind()
+        findController.search(keepCurrent: false)
+    }
+
+    var findSource: String { textView.string }
+    var findCaret: Int { textView.selectedRange().location }
+
+    func showFindMatches(_ matches: [NSRange], current: NSRange?) {
+        clearFindHighlights()
+        let length = (textView.string as NSString).length
+        let valid = matches.filter { NSMaxRange($0) <= length }
+        let color = NSColor.findHighlightColor.withAlphaComponent(0.45)
+        if let lm = textView.layoutManager, textView.textLayoutManager == nil {
+            for range in valid { lm.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: range) }
+        } else if let tlm = textView.textLayoutManager, let content = textView.textContentStorage {
+            for range in valid {
+                guard let start = content.location(tlm.documentRange.location, offsetBy: range.location),
+                      let end = content.location(start, offsetBy: range.length),
+                      let textRange = NSTextRange(location: start, end: end) else { continue }
+                tlm.addRenderingAttribute(.backgroundColor, value: color, for: textRange)
+            }
+        }
+        findHighlights = valid
+        if let current, NSMaxRange(current) <= length {
+            textView.setSelectedRange(current)
+            textView.scrollRangeToVisible(current)
+            textView.showFindIndicator(for: current)
+        }
+    }
+
+    private func clearFindHighlights() {
+        guard !findHighlights.isEmpty else { return }
+        let full = NSRange(location: 0, length: (textView.string as NSString).length)
+        if let lm = textView.layoutManager, textView.textLayoutManager == nil {
+            lm.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
+        } else if let tlm = textView.textLayoutManager {
+            tlm.removeRenderingAttribute(.backgroundColor, for: tlm.documentRange)
+        }
+        findHighlights = []
+    }
+
+    func replaceFindMatch(_ range: NSRange, with replacement: String) {
+        guard NSMaxRange(range) <= (textView.string as NSString).length else { return }
+        // One undoable edit through the normal typing path (keeps the view anchored too).
+        if textView.shouldChangeText(in: range, replacementString: replacement) {
+            textView.textStorage?.replaceCharacters(in: range, with: replacement)
+            textView.didChangeText()
+        }
+    }
+
+    func replaceAllFindMatches(with text: String, count: Int) {
+        let caret = min(textView.selectedRange().location, (text as NSString).length)
+        textView.applyEdit(EditResult(text: text, selected: NSRange(location: caret, length: 0)))
+        canvas.relayout()
+    }
+
+    func endFind() {
+        clearFindHighlights()
+        findPopover = nil
+        window?.makeFirstResponder(textView)
+    }
+
+    /// Drives the find popover's logic without showing it (UI tests).
+    func testFind(_ query: String, replace: String? = nil, caseSensitive: Bool = false, wholeWord: Bool = false) -> FindReplaceViewController {
+        let controller = findController
+        controller.testSetOptions(caseSensitive: caseSensitive, wholeWord: wholeWord)
+        controller.findField.stringValue = query
+        if let replace { controller.replaceField.stringValue = replace }
+        controller.search(keepCurrent: false)
+        return controller
+    }
+    var testFindHighlightCount: Int { findHighlights.count }
+    var testFindQuery: String { findController.findField.stringValue }
+    var testEditAnchor: CGFloat? { editAnchor }
+    var testHasPendingRelayout: Bool { canvas.hasPendingRelayout }
+    var testFindButtonIsViewBased: Bool { findButton != nil }
 
     @objc func toggleSourceMode() {
         mode = (mode == .wysiwyg) ? .source : .wysiwyg
@@ -811,18 +1317,10 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
     @objc func zoomIn() { setManualZoom(PageLayout.stepZoom(from: scroll.magnification, delta: 1)) }
     @objc func zoomOut() { setManualZoom(PageLayout.stepZoom(from: scroll.magnification, delta: -1)) }
     @objc func zoomActual() { setManualZoom(1) }
-    @objc func zoomFitWidth() { setZoomMode("auto") }
     @objc func zoomAuto() { setZoomMode("auto") }
-    @objc func zoomWide() { setZoomMode("wide") }
 
     @objc private func windowResized() {
         applyFitWidthIfNeeded()
-    }
-
-    @objc private func windowWillCloseNote() {
-        sidebarAnimationTimer?.invalidate()
-        sidebarAnimationTimer = nil
-        sidebarAnimating = false
     }
 
     func setZoomMode(_ mode: String) {
@@ -843,24 +1341,15 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
 
     func applyZoomFromSettings(persist: Bool) {
         let s = SettingsStore.shared.current
-        switch s.zoomMode {
-        case "wide":
-            canvas.horizontalPadding = 0
-        case "auto":
-            canvas.horizontalPadding = 8
-        default:
-            canvas.horizontalPadding = PageGeometry.canvasPadding
-        }
+        canvas.horizontalPadding = s.zoomMode == "auto" ? 8 : PageGeometry.canvasPadding
         canvas.relayout()
-        if s.zoomMode == "auto" || s.zoomMode == "wide" {
+        if s.zoomMode == "auto" {
             scroll.hasHorizontalScroller = false
             let mag = fitWidthMagnification()
             scroll.magnification = mag
-            zoomAutoButton?.state = s.zoomMode == "auto" ? .on : .off
         } else {
             scroll.hasHorizontalScroller = true
             scroll.magnification = max(0.25, min(4, s.zoomFactor))
-            zoomAutoButton?.state = .off
         }
         scroll.reflectScrolledClipView(scroll.contentView)
         refreshZoomLabel()
@@ -873,7 +1362,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
 
     func applyFitWidthIfNeeded() {
         let mode = SettingsStore.shared.current.zoomMode
-        guard mode == "auto" || mode == "wide" else { return }
+        guard mode == "auto" else { return }
         scroll.magnification = fitWidthMagnification()
         refreshZoomLabel()
     }
@@ -885,8 +1374,45 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         return max(0.25, min(4, available / docWidth))
     }
 
+    static let autoZoomTitle = "Auto %"
+
+    static func percentString(_ magnification: CGFloat) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .percent
+        formatter.maximumFractionDigits = 0
+        let text = formatter.string(from: NSNumber(value: Double(magnification))) ?? "\(Int((magnification * 100).rounded())) %"
+        // NSMenuItem turns no-break spaces ("70 %" in many locales) into plain ones; match that.
+        return text.replacingOccurrences(of: "\u{00A0}", with: " ").replacingOccurrences(of: "\u{202F}", with: " ")
+    }
+
+    /// Title follows the live magnification (also during pinch); the checkmark marks the active mode.
     func refreshZoomLabel() {
-        zoomAutoButton?.state = SettingsStore.shared.current.zoomMode == "auto" ? .on : .off
+        guard let popup = zoomPopup else { return }
+        let items = popup.itemArray
+        // Auto shows "Auto %" — the percentage changes with the window, the mode is what matters.
+        let title = SettingsStore.shared.current.zoomMode == "auto" ? Self.autoZoomTitle : Self.percentString(scroll.magnification)
+        if items.first?.title != title { items.first?.title = title }
+        let s = SettingsStore.shared.current
+        for item in items.dropFirst() {
+            let on: Bool
+            switch item.identifier?.rawValue {
+            case "zoom.auto": on = s.zoomMode == "auto"
+            default:
+                let step = (item.representedObject as? NSNumber).map { CGFloat($0.doubleValue) }
+                on = s.zoomMode == "manual" && step.map { abs($0 - scroll.magnification) < 0.005 } == true
+            }
+            item.state = on ? .on : .off
+        }
+    }
+
+    @objc func zoomPresetChosen(_ sender: NSMenuItem) {
+        guard let number = sender.representedObject as? NSNumber else { return }
+        setManualZoom(CGFloat(number.doubleValue))
+    }
+
+    /// Pinch-zoom ends in manual mode at whatever magnification the user chose.
+    @objc private func liveMagnifyEnded() {
+        setManualZoom(max(0.25, min(4, scroll.magnification)))
     }
 
     @objc func exportPDF() {
@@ -905,21 +1431,72 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         }
     }
 
-    @objc func printDocumentAction() {
-        PrintController.run(canvas: canvas, from: window)
+    func makePrintOperation(printInfo: NSPrintInfo) -> NSPrintOperation {
+        PrintController.operation(canvas: canvas, title: window?.title, printInfo: printInfo)
     }
 
-    @objc func shareAction(_ sender: Any?) {
-        var items: [Any] = []
-        if let url = (document as? MarkdownDocument)?.fileURL {
-            items.append(url)
-        } else if let data = PDFExporter.data(from: canvas) {
-            items.append(data)
+    /// Kept for callers without a document (tests); the menu and toolbar use `NSDocument.printDocument(_:)`.
+    @objc func printDocumentAction() {
+        let op = makePrintOperation(printInfo: NSPrintInfo.shared)
+        if let window {
+            op.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+        } else {
+            op.run()
         }
-        let picker = NSSharingServicePicker(items: items)
-        if let view = (sender as? NSView) ?? window?.contentView {
-            picker.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
+    }
+
+    // MARK: - Share
+
+    /// What gets shared: the document's own `.md` file, like any document app.
+    /// Unsaved edits are autosaved first (the service reads the file only after the user picks it).
+    /// An untitled document is shared as a temporary `<name>.md` holding the current text.
+    func shareItems() -> [Any] {
+        let doc = document as? MarkdownDocument
+        if let doc, let url = doc.fileURL {
+            if doc.isDocumentEdited {
+                doc.autosave(withImplicitCancellability: false) { _ in }
+            }
+            return [url]
         }
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Marka Share", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let title = doc?.displayName ?? "Untitled"
+        let name = title.hasSuffix(".md") ? title : title + ".md"
+        let url = folder.appendingPathComponent(name)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data(markdownString().utf8).write(to: url)
+            return [url]
+        } catch {
+            return [markdownString()]
+        }
+    }
+
+    func items(for pickerToolbarItem: NSSharingServicePickerToolbarItem) -> [Any] {
+        shareItems()
+    }
+
+    /// File → Share: the standard system Share submenu for this document.
+    func makeShareMenuItem() -> NSMenuItem {
+        let picker = NSSharingServicePicker(items: shareItems())
+        return picker.standardShareMenuItem
+    }
+
+    var testShareToolbarItemIsSystem: Bool {
+        window?.toolbar?.items.contains { $0.itemIdentifier == .share && $0 is NSSharingServicePickerToolbarItem } ?? false
+    }
+
+    private static let tableEditActions: Set<Selector> = [
+        #selector(insertTableRowAbove), #selector(insertTableRowBelow),
+        #selector(insertTableColumnLeft), #selector(insertTableColumnRight),
+        #selector(addTableRow), #selector(addTableColumn),
+        #selector(deleteTableRow), #selector(deleteTableColumn), #selector(deleteTable)
+    ]
+
+    var testTableMenuEnabled: Bool {
+        let item = NSMenuItem(title: "Delete Row", action: #selector(deleteTableRow), keyEquivalent: "")
+        return validateMenuItem(item)
     }
 
     @objc func insertTableRowAbove() { canvas.insertTableRow(.above) }
@@ -940,6 +1517,10 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        // Format → Table row/column commands only apply with the cursor in a table cell.
+        if let action = menuItem.action, Self.tableEditActions.contains(action) {
+            return canvas.isEditingTable
+        }
         if menuItem.action == #selector(toggleSourceMode) {
             menuItem.state = mode == .source ? .on : .off
         }
@@ -1036,32 +1617,6 @@ extension NSToolbarItem.Identifier {
     static let share = NSToolbarItem.Identifier("share")
     static let zoom = NSToolbarItem.Identifier("zoom")
     static let exportPDF = NSToolbarItem.Identifier("exportPDF")
-}
-
-enum ZoomGlyph {
-    static func autoImage() -> NSImage {
-        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
-            NSColor.black.setStroke()
-            let glass = NSBezierPath(ovalIn: NSRect(x: 1.2, y: 4.6, width: 11.4, height: 11.4))
-            glass.lineWidth = 1.35
-            glass.stroke()
-            let handle = NSBezierPath()
-            handle.move(to: NSPoint(x: 11.4, y: 5.0))
-            handle.line(to: NSPoint(x: 16.2, y: 1.2))
-            handle.lineWidth = 1.55
-            handle.lineCapStyle = .round
-            handle.stroke()
-            let letter = "A" as NSString
-            letter.draw(
-                in: NSRect(x: 3.1, y: 6.0, width: 8, height: 10),
-                withAttributes: [
-                    .font: NSFont.systemFont(ofSize: 7.4, weight: .semibold),
-                    .foregroundColor: NSColor.black
-                ]
-            )
-            return true
-        }
-        image.isTemplate = true
-        return image
-    }
+    static let pageInfo = NSToolbarItem.Identifier("pageInfo")
+    static let print = NSToolbarItem.Identifier("print")
 }

@@ -12,6 +12,7 @@ enum PDFExporter {
               let ctx = CGContext(consumer: consumer, mediaBox: &media, nil) else { return nil }
 
         let headings = MarkdownSyntax.outline(in: canvas.textView.string)
+        let links = linkRegions(canvas: canvas)
         for i in 0..<pageCount {
             var box = media
             ctx.beginPage(mediaBox: &box)
@@ -34,10 +35,90 @@ enum PDFExporter {
                     ctx.addDestination(dest as CFString, at: CGPoint(x: geometry.margin, y: paperY))
                 }
             }
+            // Clickable links: a URL annotation over each line of the link label.
+            for link in links where link.page == i {
+                let pdfRect = CGRect(
+                    x: link.rect.minX,
+                    y: geometry.paperSize.height - link.rect.maxY,
+                    width: link.rect.width,
+                    height: link.rect.height
+                )
+                ctx.setURL(link.url as CFURL, for: pdfRect)
+            }
             ctx.endPage()
         }
         ctx.closePDF()
         return data as Data
+    }
+
+    struct LinkRegion {
+        var page: Int
+        /// Page coordinates, y down from the paper's top edge.
+        var rect: CGRect
+        var url: URL
+    }
+
+    /// Where each link label lands on the exported pages, and the URL it points to. Web links stay
+    /// web links; local files and `.md` links become absolute file URLs. Links inside tables are
+    /// drawn by the table overlay, not the text, so they are skipped.
+    static func linkRegions(canvas: PagedEditorView) -> [LinkRegion] {
+        let geometry = canvas.geometry
+        let source = canvas.textView.string
+        let spans = MarkdownSyntax.spans(in: source)
+        let tables = spans.compactMap { span -> NSRange? in
+            if case .table = span.kind { return span.group }
+            return nil
+        }
+        var regions: [LinkRegion] = []
+        for span in spans where span.role == .content {
+            guard case .link(let raw) = span.kind else { continue }
+            guard !tables.contains(where: { NSLocationInRange(span.range.location, $0) }) else { continue }
+            let url: URL
+            switch Hyperlink.destination(raw, relativeTo: canvas.documentDirectory) {
+            case .remote(let remote)?: url = remote
+            case .markdown(let file)?, .file(let file)?: url = file.absoluteURL
+            case nil: continue
+            }
+            for rect in canvas.textView.segmentRects(for: span.range) {
+                let page = min(canvas.pageCount - 1, PageLayout.pageIndex(forTextY: rect.midY, geometry: geometry))
+                let top = geometry.margin + (rect.minY - PageLayout.contentTop(pageIndex: page, geometry: geometry))
+                regions.append(LinkRegion(
+                    page: page,
+                    rect: CGRect(x: geometry.margin + rect.minX, y: top, width: rect.width, height: rect.height),
+                    url: url
+                ))
+            }
+        }
+        return regions
+    }
+
+    /// (page index, URL) of every link annotation in a PDF — for tests.
+    static func linkAnnotations(in data: Data) -> [(page: Int, url: String, rect: CGRect)] {
+        guard let provider = CGDataProvider(data: data as CFData), let pdf = CGPDFDocument(provider) else { return [] }
+        var found: [(Int, String, CGRect)] = []
+        for number in 1...max(1, pdf.numberOfPages) {
+            guard let page = pdf.page(at: number), let dict = page.dictionary else { continue }
+            var annots: CGPDFArrayRef?
+            guard CGPDFDictionaryGetArray(dict, "Annots", &annots), let annots else { continue }
+            for index in 0..<CGPDFArrayGetCount(annots) {
+                var annot: CGPDFDictionaryRef?
+                guard CGPDFArrayGetDictionary(annots, index, &annot), let annot else { continue }
+                var action: CGPDFDictionaryRef?
+                var uri: CGPDFStringRef?
+                guard CGPDFDictionaryGetDictionary(annot, "A", &action), let action,
+                      CGPDFDictionaryGetString(action, "URI", &uri), let uri,
+                      let text = CGPDFStringCopyTextString(uri) as String? else { continue }
+                var rectArray: CGPDFArrayRef?
+                var rect = CGRect.zero
+                if CGPDFDictionaryGetArray(annot, "Rect", &rectArray), let rectArray, CGPDFArrayGetCount(rectArray) == 4 {
+                    var v = [CGPDFReal](repeating: 0, count: 4)
+                    for k in 0..<4 { CGPDFArrayGetNumber(rectArray, k, &v[k]) }
+                    rect = CGRect(x: v[0], y: v[1], width: v[2] - v[0], height: v[3] - v[1])
+                }
+                found.append((number - 1, text, rect))
+            }
+        }
+        return found
     }
 
     static func write(from canvas: PagedEditorView, to url: URL) throws {
@@ -134,8 +215,9 @@ final class PrintablePagesView: NSView {
 
 @MainActor
 enum PrintController {
-    static func run(canvas: PagedEditorView, from window: NSWindow?) {
-        let info = NSPrintInfo.shared.copy() as! NSPrintInfo
+    /// The standard macOS print operation for the A4 pages (what you see is what prints).
+    static func operation(canvas: PagedEditorView, title: String?, printInfo: NSPrintInfo? = nil) -> NSPrintOperation {
+        let info = (printInfo ?? NSPrintInfo.shared).copy() as! NSPrintInfo
         info.paperSize = canvas.geometry.paperSize
         info.leftMargin = 0
         info.rightMargin = 0
@@ -147,7 +229,10 @@ enum PrintController {
         info.isVerticallyCentered = false
         let view = PrintablePagesView(canvas: canvas)
         let op = NSPrintOperation(view: view, printInfo: info)
-        op.jobTitle = window?.title ?? "Marka"
-        op.run()
+        op.jobTitle = title ?? "Marka"
+        op.showsPrintPanel = true
+        op.showsProgressPanel = true
+        op.printPanel.options.formUnion([.showsCopies, .showsPageRange, .showsPreview, .showsPrintSelection])
+        return op
     }
 }
