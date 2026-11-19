@@ -8,17 +8,26 @@ let package = Package(
     ],
     products: [
         .library(name: "MarkaCore", targets: ["MarkaCore"]),
-        .executable(name: "Marka", targets: ["MarkaApp"])
+        .library(name: "MarkaUI", targets: ["MarkaUI"]),
+        .executable(name: "Marka", targets: ["Marka"])
     ],
     targets: [
         .target(
             name: "MarkaCore",
             path: "Sources/MarkaCore"
         ),
-        .executableTarget(
-            name: "MarkaApp",
+        .target(
+            name: "MarkaUI",
             dependencies: ["MarkaCore"],
             path: "Sources/MarkaApp",
+            linkerSettings: [
+                .linkedFramework("AppKit")
+            ]
+        ),
+        .executableTarget(
+            name: "Marka",
+            dependencies: ["MarkaUI"],
+            path: "Sources/MarkaLauncher",
             linkerSettings: [
                 .linkedFramework("AppKit")
             ]
@@ -27,6 +36,14 @@ let package = Package(
             name: "MarkaTests",
             dependencies: ["MarkaCore"],
             path: "Tests/MarkaCoreTests"
+        ),
+        .executableTarget(
+            name: "MarkaUITests",
+            dependencies: ["MarkaUI", "MarkaCore"],
+            path: "Tests/MarkaUITests",
+            linkerSettings: [
+                .linkedFramework("AppKit")
+            ]
         )
     ]
 )

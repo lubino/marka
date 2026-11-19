@@ -9,6 +9,9 @@ public struct EditorSettings: Equatable, Sendable {
     public var autosave: Bool
     public var darkPaper: Bool
     public var showSidebar: Bool
+    /// `auto`, `wide`, or `manual`.
+    public var zoomMode: String
+    public var zoomFactor: CGFloat
 
     public static let `default` = EditorSettings(
         fontName: "New York",
@@ -17,7 +20,9 @@ public struct EditorSettings: Equatable, Sendable {
         showPageNumbers: true,
         autosave: true,
         darkPaper: false,
-        showSidebar: true
+        showSidebar: true,
+        zoomMode: "auto",
+        zoomFactor: 1
     )
 
     public init(
@@ -27,7 +32,9 @@ public struct EditorSettings: Equatable, Sendable {
         showPageNumbers: Bool,
         autosave: Bool,
         darkPaper: Bool,
-        showSidebar: Bool
+        showSidebar: Bool,
+        zoomMode: String = "auto",
+        zoomFactor: CGFloat = 1
     ) {
         self.fontName = fontName
         self.fontSize = fontSize
@@ -36,6 +43,8 @@ public struct EditorSettings: Equatable, Sendable {
         self.autosave = autosave
         self.darkPaper = darkPaper
         self.showSidebar = showSidebar
+        self.zoomMode = zoomMode
+        self.zoomFactor = zoomFactor
     }
 
     public var geometry: PageGeometry {
@@ -74,6 +83,11 @@ public final class SettingsStore: @unchecked Sendable {
         if defaults.object(forKey: prefix + "showSidebar") != nil {
             s.showSidebar = defaults.bool(forKey: prefix + "showSidebar")
         }
+        if let mode = defaults.string(forKey: prefix + "zoomMode") {
+            s.zoomMode = mode
+        }
+        let zoom = defaults.double(forKey: prefix + "zoomFactor")
+        if zoom > 0 { s.zoomFactor = CGFloat(zoom) }
         self.current = s
     }
 
@@ -85,5 +99,7 @@ public final class SettingsStore: @unchecked Sendable {
         defaults.set(current.autosave, forKey: prefix + "autosave")
         defaults.set(current.darkPaper, forKey: prefix + "darkPaper")
         defaults.set(current.showSidebar, forKey: prefix + "showSidebar")
+        defaults.set(current.zoomMode, forKey: prefix + "zoomMode")
+        defaults.set(Double(current.zoomFactor), forKey: prefix + "zoomFactor")
     }
 }

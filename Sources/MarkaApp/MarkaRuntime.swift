@@ -1,8 +1,9 @@
 import AppKit
 
-@main
-enum MarkaMain {
-    static func main() {
+@MainActor
+public enum MarkaRuntime {
+    public static func start() {
+        CrashReporter.install()
         let _ = MarkaDocumentController.shared
         let app = NSApplication.shared
         let delegate = AppDelegate()

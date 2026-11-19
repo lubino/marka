@@ -18,7 +18,7 @@ enum Theme {
     }
 
     static func codeFont(_ settings: EditorSettings) -> NSFont {
-        NSFont.monospacedSystemFont(ofSize: max(10, settings.fontSize - 1), weight: .regular)
+        NSFont.monospacedSystemFont(ofSize: max(11.5, settings.fontSize + 0.5), weight: .regular)
     }
 
     static func font(named name: String, size: CGFloat, weight: NSFont.Weight, design: NSFontDescriptor.SystemDesign) -> NSFont {
@@ -34,7 +34,7 @@ enum Theme {
     }
 
     static func bodyColor(darkPaper: Bool) -> NSColor {
-        darkPaper ? NSColor(white: 0.92, alpha: 1) : NSColor(white: 0.12, alpha: 1)
+        darkPaper ? NSColor(white: 0.92, alpha: 1) : NSColor(srgbRed: 0.12, green: 0.14, blue: 0.15, alpha: 1)
     }
 
     static func paperColor(darkPaper: Bool) -> NSColor {
@@ -46,13 +46,79 @@ enum Theme {
         return NSColor(calibratedWhite: 0.78, alpha: 1)
     }
 
-    static func bodyParagraph(indent: CGFloat = 0, spacingBefore: CGFloat = 0, spacingAfter: CGFloat = 8, alignment: NSTextAlignment = .left) -> NSParagraphStyle {
+    /// GitHub light `pre` / `.highlight` fill `#f6f8fa`.
+    static func codeBlockFill(darkPaper: Bool) -> NSColor {
+        darkPaper ? NSColor(white: 0.16, alpha: 1) : NSColor(srgbRed: 0.965, green: 0.973, blue: 0.980, alpha: 1)
+    }
+
+    static func codeBlockBorder(darkPaper: Bool) -> NSColor {
+        darkPaper ? NSColor(white: 0.28, alpha: 1) : NSColor(srgbRed: 0.816, green: 0.843, blue: 0.871, alpha: 1)
+    }
+
+    static func drawCodeBlockFill(in rect: CGRect, darkPaper: Bool) {
+        guard rect.width > 1, rect.height > 1 else { return }
+        let path = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
+        codeBlockFill(darkPaper: darkPaper).setFill()
+        path.fill()
+        codeBlockBorder(darkPaper: darkPaper).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+
+    static func inlineCodeFill(darkPaper: Bool) -> NSColor {
+        darkPaper ? NSColor(white: 0.22, alpha: 1) : NSColor(srgbRed: 0.175, green: 0.184, blue: 0.193, alpha: 0.12)
+    }
+
+    static func tableHeaderFill(darkPaper: Bool) -> NSColor {
+        darkPaper ? NSColor(white: 0.18, alpha: 1) : NSColor(srgbRed: 0.965, green: 0.973, blue: 0.980, alpha: 1)
+    }
+
+    static func tableBorder(darkPaper: Bool) -> NSColor {
+        codeBlockBorder(darkPaper: darkPaper)
+    }
+
+    /// GitHub heading underline (`h1` / `h2` border-bottom).
+    static func headingRule(darkPaper: Bool) -> NSColor {
+        darkPaper
+            ? NSColor(white: 0.32, alpha: 1)
+            : NSColor(srgbRed: 0.816, green: 0.843, blue: 0.871, alpha: 1)
+    }
+
+    /// Space under h1/h2 that holds the GitHub rule. Not a typeable row.
+    static let headingRuleGap: CGFloat = 10
+
+    static func headingParagraph(level: Int) -> NSParagraphStyle {
+        let before: CGFloat
+        let after: CGFloat
+        switch level {
+        case 1:
+            before = 12
+            after = headingRuleGap + 6
+        case 2:
+            before = 10
+            after = headingRuleGap + 4
+        default:
+            before = 8
+            after = 4
+        }
+        return bodyParagraph(spacingBefore: before, spacingAfter: after)
+    }
+
+    static func bodyParagraph(
+        indent: CGFloat = 0,
+        tailIndent: CGFloat = 0,
+        spacingBefore: CGFloat = 0,
+        spacingAfter: CGFloat = 4,
+        alignment: NSTextAlignment = .left,
+        lineHeight: CGFloat = 1.18
+    ) -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
         style.paragraphSpacing = spacingAfter
         style.paragraphSpacingBefore = spacingBefore
-        style.lineHeightMultiple = 1.18
+        style.lineHeightMultiple = lineHeight
         style.headIndent = indent
         style.firstLineHeadIndent = indent
+        style.tailIndent = tailIndent == 0 ? 0 : -tailIndent
         style.alignment = alignment
         return style
     }
@@ -63,7 +129,8 @@ enum StyleEngine {
         to storage: NSTextStorage,
         mode: EditorMode,
         settings: EditorSettings,
-        selection: NSRange
+        selection _: NSRange,
+        extraBlockSpacing: [Int: CGFloat] = [:]
     ) {
         let full = NSRange(location: 0, length: storage.length)
         let body = Theme.bodyFont(settings)
@@ -77,23 +144,92 @@ enum StyleEngine {
 
         guard storage.length > 0 else { return }
         let spans = MarkdownSyntax.spans(in: storage.string)
+        let ns = storage.string as NSString
         for span in spans {
             guard span.range.length > 0, NSMaxRange(span.range) <= storage.length else { continue }
-            let caretInGroup = NSLocationInRange(selection.location, span.group)
-                || selection.location == NSMaxRange(span.group)
-                || NSIntersectionRange(selection, span.group).length > 0
-            if span.role == .marker && mode == .wysiwyg && !caretInGroup {
+            if case .table = span.kind, mode == .wysiwyg {
                 storage.addAttributes([
                     .font: NSFont.systemFont(ofSize: 0.01),
                     .foregroundColor: NSColor.clear,
                     .kern: -1
                 ], range: span.range)
+                if NSMaxRange(span.range) == NSMaxRange(span.group) {
+                    let lastLine = ns.lineRange(for: NSRange(location: max(span.group.location, NSMaxRange(span.group) - 1), length: 0))
+                    if lastLine.length > 0, NSMaxRange(lastLine) <= storage.length {
+                        let extra = extraBlockSpacing[span.group.location] ?? 0
+                        storage.addAttributes([
+                            .paragraphStyle: Theme.bodyParagraph(spacingAfter: extra)
+                        ], range: lastLine)
+                    }
+                }
+                continue
+            }
+
+            if span.role == .marker && mode == .wysiwyg {
+                var hide: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 0.01),
+                    .foregroundColor: NSColor.clear,
+                    .kern: -1
+                ]
+                if case .codeBlock = span.kind {
+                    let isOpen = span.range.location == span.group.location
+                    hide[.paragraphStyle] = Theme.bodyParagraph(
+                        indent: 16,
+                        tailIndent: 16,
+                        spacingBefore: isOpen ? 6 : 8,
+                        spacingAfter: isOpen ? 10 : 6
+                    )
+                }
+                storage.addAttributes(hide, range: span.range)
                 continue
             }
             storage.addAttributes(
                 attributes(span: span, settings: settings, markerRevealed: span.role == .marker, mode: mode),
                 range: span.range
             )
+        }
+        if mode == .wysiwyg {
+            for span in spans {
+                if case .heading(let level) = span.kind, span.role == .content {
+                    let line = ns.lineRange(for: NSRange(location: span.group.location, length: 0))
+                    if line.length > 0, NSMaxRange(line) <= storage.length {
+                        storage.addAttributes([
+                            .paragraphStyle: Theme.headingParagraph(level: level)
+                        ], range: line)
+                    }
+                }
+                if case .heading = span.kind, span.role == .marker {
+                    let line = ns.lineRange(for: NSRange(location: span.range.location, length: 0))
+                    var text = ns.substring(with: line)
+                    if text.hasSuffix("\n") { text.removeLast() }
+                    let trimmed = text.trimmingCharacters(in: .whitespaces)
+                    if trimmed.count >= 2, trimmed.allSatisfy({ $0 == "=" || $0 == "-" }) {
+                        storage.addAttributes([
+                            .font: NSFont.systemFont(ofSize: 0.01),
+                            .foregroundColor: NSColor.clear,
+                            .kern: -1,
+                            .paragraphStyle: Theme.bodyParagraph(spacingBefore: 0, spacingAfter: 0, lineHeight: 0.01)
+                        ], range: line)
+                    }
+                }
+            }
+            for span in spans {
+                guard case .link = span.kind, span.role == .content else { continue }
+                guard span.range.length > 0, NSMaxRange(span.range) <= storage.length else { continue }
+                storage.addAttributes([
+                    .foregroundColor: NSColor.systemBlue,
+                    .underlineStyle: NSUnderlineStyle.single.rawValue,
+                    .cursor: NSCursor.pointingHand
+                ], range: span.range)
+            }
+            for span in spans where span.role == .marker {
+                guard span.range.length > 0, NSMaxRange(span.range) <= storage.length else { continue }
+                storage.addAttributes([
+                    .font: NSFont.systemFont(ofSize: 0.01),
+                    .foregroundColor: NSColor.clear,
+                    .kern: -1
+                ], range: span.range)
+            }
         }
     }
 
@@ -110,7 +246,7 @@ enum StyleEngine {
             if span.role == .content {
                 attrs[.font] = Theme.headingFont(settings, level: level)
                 attrs[.foregroundColor] = bodyColor
-                attrs[.paragraphStyle] = Theme.bodyParagraph(spacingBefore: level == 1 ? 18 : 14, spacingAfter: 8)
+                attrs[.paragraphStyle] = Theme.headingParagraph(level: level)
             }
         case .strong:
             if span.role == .content {
@@ -130,26 +266,38 @@ enum StyleEngine {
         case .inlineCode:
             if span.role == .content {
                 attrs[.font] = Theme.codeFont(settings)
-                attrs[.backgroundColor] = NSColor(white: settings.darkPaper ? 0.2 : 0.94, alpha: 1)
+                attrs[.backgroundColor] = Theme.inlineCodeFill(darkPaper: settings.darkPaper)
                 attrs[.foregroundColor] = bodyColor
+                attrs[.baselineOffset] = 1
+                attrs[.kern] = 0.4
             }
         case .codeBlock:
             attrs[.font] = Theme.codeFont(settings)
-            attrs[.backgroundColor] = NSColor(white: settings.darkPaper ? 0.18 : 0.95, alpha: 1)
-            attrs[.paragraphStyle] = Theme.bodyParagraph(spacingBefore: 8, spacingAfter: 8)
+            attrs[.foregroundColor] = bodyColor
+            attrs[.backgroundColor] = NSColor.clear
+            attrs[.paragraphStyle] = Theme.bodyParagraph(
+                indent: 16,
+                tailIndent: 16,
+                spacingBefore: 2,
+                spacingAfter: 2,
+                lineHeight: 1.45
+            )
         case .blockquote:
             if span.role == .content {
                 attrs[.foregroundColor] = NSColor.secondaryLabelColor
-                attrs[.paragraphStyle] = Theme.bodyParagraph(indent: 18, spacingAfter: 8)
+                attrs[.paragraphStyle] = Theme.bodyParagraph(indent: 18, spacingAfter: 4)
             }
         case .list:
             if span.role == .content {
-                attrs[.paragraphStyle] = Theme.bodyParagraph(indent: 18, spacingAfter: 4)
+                attrs[.paragraphStyle] = Theme.bodyParagraph(indent: 18, spacingAfter: 2)
             }
         case .link:
             if span.role == .content {
                 attrs[.foregroundColor] = NSColor.systemBlue
                 attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+                if mode == .wysiwyg {
+                    attrs[.cursor] = NSCursor.pointingHand
+                }
             }
         case .image:
             if span.role == .content {
@@ -157,7 +305,6 @@ enum StyleEngine {
             }
         case .table:
             attrs[.font] = Theme.codeFont(settings)
-            attrs[.backgroundColor] = NSColor(white: settings.darkPaper ? 0.16 : 0.97, alpha: 1)
         case .thematicBreak:
             attrs[.foregroundColor] = NSColor.separatorColor
             attrs[.paragraphStyle] = Theme.bodyParagraph(spacingBefore: 12, spacingAfter: 12, alignment: .center)

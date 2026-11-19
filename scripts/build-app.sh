@@ -79,7 +79,10 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
             <key>LSItemContentTypes</key>
             <array>
                 <string>net.daringfireball.markdown</string>
+                <string>public.markdown</string>
                 <string>public.plain-text</string>
+                <string>public.utf8-plain-text</string>
+                <string>public.text</string>
             </array>
             <key>CFBundleTypeExtensions</key>
             <array>
@@ -88,7 +91,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
                 <string>txt</string>
             </array>
             <key>NSDocumentClass</key>
-            <string>MarkaApp.MarkdownDocument</string>
+            <string>MarkdownDocument</string>
         </dict>
     </array>
     <key>UTImportedTypeDeclarations</key>

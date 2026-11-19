@@ -56,10 +56,16 @@ open build/Marka.app
 
 ## What you get
 
-- WYSIWYG Markdown (hidden markers, revealed when the caret is in the element)
-- Source mode (`⌘/`)
-- Live A4 pages with thumbnail sidebar (Preview-style)
-- Headings, emphasis, lists, task lists, quotes, tables, links, images, code
+- WYSIWYG Markdown (markers stay hidden; source mode `⌘/` shows raw Markdown)
+- Live A4 pages with thumbnail sidebar (white page chips, no grey frame)
+- Headings, emphasis, lists, task lists, quotes, images
+- Word-style links: blue display text (including `[`file.md`](./file.md)`), URL card (Open / Copy / Remove). Local Markdown opens in Marka; other URLs open in the system app
+- GitHub-style fenced code and quotes: overlapping-squares copy chip hanging off the top-right corner. Shell fences also get a Terminal chip that runs the block in Terminal.app
+- Pages-style tables: size grid on insert, empty cells, translucent `+`/`−` chips on the table edges, Delete Table (last row/column removes the table). Tables continue across pages with a repeated header
+- Crash logs in `~/Library/Logs/Marka`; the next launch offers to show the latest report
+- Live format toolbar: Bold, headings, and other controls highlight from the caret and toggle off when already applied. Controls disable in fenced code, table overlay, and other places where that format cannot apply
+- Compact headings and paragraphs; GitHub-style underline under Heading 1 and 2 (the rule is not a typeable line)
+- Preview-style chrome: sidebar button before the document title; zoom is − / Auto / + magnifiers. Zoomed-out pages stay centered.
 - Manual page break: `<!-- pagebreak -->`
 - Export PDF (`⌘⇧E`) and print (`⌘P`) using the same pages
 - Share the `.md` file or a generated PDF
@@ -69,15 +75,17 @@ The saved file is ordinary UTF-8 GitHub-Flavored Markdown. Opening and saving wi
 
 ## Shortcuts
 
-| Action | Shortcut |
-| :--- | :--- |
-| Bold / Italic / Link | `⌘B` / `⌘I` / `⌘K` |
-| Find | `⌘F` |
-| Source mode | `⌘/` |
-| Sidebar | `⌘⌥S` |
-| Export PDF | `⌘⇧E` |
-| Print | `⌘P` |
-| Zoom | `⌘+` `⌘-` `⌘0` |
+| Action               |     | Shortcut                                                    |
+| -------------------- | --- | ----------------------------------------------------------- |
+| Undo / Redo          |     | `⌘Z` or `Ctrl+Z` / `⌘⇧Z`                                    |
+| Bold / Italic / Link |     | `⌘B` / `⌘I` / `⌘K`                                          |
+| Find                 |     | `⌘F`                                                        |
+| Source mode          |     | `⌘/`                                                        |
+| Sidebar              |     | `⌘⌥S`                                                       |
+| Export PDF           |     | `⌘⇧E`                                                       |
+| Print                |     | `⌘P`                                                        |
+| Zoom                 |     | Auto / Wide (default Auto), `⌘+` `⌘-` `⌘0`                  |
+| Table                |     | Format → Table (row above/below, column left/right, delete) |
 
 ## License
 

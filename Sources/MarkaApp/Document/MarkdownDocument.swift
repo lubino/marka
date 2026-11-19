@@ -1,6 +1,7 @@
 import AppKit
 import MarkaCore
 
+@objc(MarkdownDocument)
 final class MarkdownDocument: NSDocument {
     var codec = FileCodec()
     var loadedString = ""
@@ -8,6 +9,25 @@ final class MarkdownDocument: NSDocument {
     var pendingString: String?
 
     override class var autosavesInPlace: Bool { true }
+
+    override class var readableTypes: [String] {
+        [
+            "Markdown Document",
+            "net.daringfireball.markdown",
+            "public.markdown",
+            "public.plain-text",
+            "public.utf8-plain-text",
+            "public.text"
+        ]
+    }
+
+    override class var writableTypes: [String] {
+        ["Markdown Document", "net.daringfireball.markdown"]
+    }
+
+    override class func isNativeType(_ type: String) -> Bool {
+        readableTypes.contains(type)
+    }
 
     override func makeWindowControllers() {
         MainActor.assumeIsolated {

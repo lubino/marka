@@ -35,6 +35,9 @@ jobs:
       - name: Run unit tests
         run: swift run MarkaTests
 
+      - name: Run UI tests
+        run: swift run MarkaUITests
+
       - name: Package Universal Marka.dmg & Marka-macos.zip
         run: |
           RAW_TAG="${GITHUB_REF_NAME:-${{ inputs.tag }}}"

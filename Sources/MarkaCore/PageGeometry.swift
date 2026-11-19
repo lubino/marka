@@ -112,17 +112,70 @@ public enum PageLayout {
         return max(0, Int(floor(y / stride)))
     }
 
-    public static func canvasSize(pageCount: Int, geometry: PageGeometry, padding: CGFloat = PageGeometry.canvasPadding) -> CGSize {
+    public static func canvasSize(
+        pageCount: Int,
+        geometry: PageGeometry,
+        padding: CGFloat = PageGeometry.canvasPadding
+    ) -> CGSize {
+        canvasSize(pageCount: pageCount, geometry: geometry, paddingX: padding, paddingY: padding)
+    }
+
+    public static func canvasSize(
+        pageCount: Int,
+        geometry: PageGeometry,
+        paddingX: CGFloat,
+        paddingY: CGFloat
+    ) -> CGSize {
         let n = max(1, pageCount)
-        let height = padding * 2
+        let height = paddingY * 2
             + CGFloat(n) * geometry.paperSize.height
             + CGFloat(n - 1) * geometry.interPageGap
-        return CGSize(width: padding * 2 + geometry.paperSize.width, height: height)
+        return CGSize(width: paddingX * 2 + geometry.paperSize.width, height: height)
     }
 
     public static func paperRect(pageIndex: Int, geometry: PageGeometry, padding: CGFloat = PageGeometry.canvasPadding) -> CGRect {
-        let y = padding + CGFloat(pageIndex) * (geometry.paperSize.height + geometry.interPageGap)
-        return CGRect(x: padding, y: y, width: geometry.paperSize.width, height: geometry.paperSize.height)
+        paperRect(pageIndex: pageIndex, geometry: geometry, paddingX: padding, paddingY: padding)
+    }
+
+    public static func paperRect(
+        pageIndex: Int,
+        geometry: PageGeometry,
+        paddingX: CGFloat,
+        paddingY: CGFloat
+    ) -> CGRect {
+        let y = paddingY + CGFloat(pageIndex) * (geometry.paperSize.height + geometry.interPageGap)
+        return CGRect(x: paddingX, y: y, width: geometry.paperSize.width, height: geometry.paperSize.height)
+    }
+
+    public static func contentRect(
+        pageIndex: Int,
+        geometry: PageGeometry,
+        paddingX: CGFloat,
+        paddingY: CGFloat
+    ) -> CGRect {
+        paperRect(pageIndex: pageIndex, geometry: geometry, paddingX: paddingX, paddingY: paddingY)
+            .insetBy(dx: geometry.margin, dy: geometry.margin)
+    }
+
+    /// Splits a canvas-space rect so each piece sits on one page's content area (cuts at the page gap).
+    public static func pageContentPieces(
+        of rect: CGRect,
+        pageCount: Int,
+        geometry: PageGeometry,
+        paddingX: CGFloat,
+        paddingY: CGFloat
+    ) -> [CGRect] {
+        guard rect.width > 0.5, rect.height > 0.5 else { return [] }
+        var pieces: [CGRect] = []
+        for index in 0..<max(1, pageCount) {
+            let piece = rect.intersection(
+                contentRect(pageIndex: index, geometry: geometry, paddingX: paddingX, paddingY: paddingY)
+            )
+            if !piece.isNull, piece.width > 0.5, piece.height > 0.5 {
+                pieces.append(piece)
+            }
+        }
+        return pieces
     }
 
     public static func nearestZoomStep(_ value: CGFloat) -> CGFloat {
@@ -135,5 +188,79 @@ public enum PageLayout {
         guard let idx = steps.firstIndex(of: nearest) else { return 1 }
         let next = min(steps.count - 1, max(0, idx + delta))
         return steps[next]
+    }
+
+    /// Packs table rows into page content, repeating the header after each page break (Pages).
+    public struct TableFlow: Equatable, Sendable {
+        public struct Row: Equatable, Sendable {
+            public var storageRow: Int
+            public var y: CGFloat
+            public var page: Int
+            public var isRepeatedHeader: Bool
+
+            public init(storageRow: Int, y: CGFloat, page: Int, isRepeatedHeader: Bool) {
+                self.storageRow = storageRow
+                self.y = y
+                self.page = page
+                self.isRepeatedHeader = isRepeatedHeader
+            }
+        }
+
+        public var rows: [Row]
+        public var startY: CGFloat
+        public var endY: CGFloat
+        public var contentHeight: CGFloat
+    }
+
+    public static func flowTableRows(
+        startY: CGFloat,
+        storageRows: [Int],
+        rowHeight: CGFloat,
+        topPad: CGFloat,
+        bottomPad: CGFloat,
+        geometry: PageGeometry
+    ) -> TableFlow {
+        func page(of y: CGFloat) -> Int { pageIndex(forTextY: y, geometry: geometry) }
+        func bottom(of y: CGFloat) -> CGFloat { contentBottom(pageIndex: page(of: y), geometry: geometry) }
+        func nextTop(of y: CGFloat) -> CGFloat { contentTop(pageIndex: page(of: y) + 1, geometry: geometry) }
+
+        var y = startY
+        var content: CGFloat = 0
+        func ensure(_ height: CGFloat) {
+            var hops = 0
+            while bottom(of: y) - y < height - 0.5, hops < 64 {
+                y = nextTop(of: y)
+                hops += 1
+            }
+        }
+
+        ensure(topPad + rowHeight)
+        y += topPad
+        content += topPad
+
+        var rows: [TableFlow.Row] = []
+        let header = storageRows.first ?? 0
+        func place(_ storage: Int, repeated: Bool) {
+            ensure(rowHeight)
+            rows.append(TableFlow.Row(storageRow: storage, y: y, page: page(of: y), isRepeatedHeader: repeated))
+            y += rowHeight
+            content += rowHeight
+        }
+
+        for (index, storage) in storageRows.enumerated() {
+            if index == 0 {
+                place(storage, repeated: false)
+                continue
+            }
+            if bottom(of: y) - y < rowHeight - 0.5 {
+                y = nextTop(of: y)
+                place(header, repeated: true)
+            }
+            place(storage, repeated: false)
+        }
+        ensure(bottomPad)
+        y += bottomPad
+        content += bottomPad
+        return TableFlow(rows: rows, startY: startY, endY: y, contentHeight: content)
     }
 }

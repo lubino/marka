@@ -5,6 +5,8 @@ import MarkaCore
 protocol MarkdownTextViewDelegate: AnyObject {
     func markdownTextViewDidChange(_ view: MarkdownTextView)
     func markdownTextView(_ view: MarkdownTextView, didRequestRelayout: Void)
+    func markdownTextViewDidChangeSelection(_ view: MarkdownTextView)
+    func markdownTextViewDidRequestLinkCard(_ view: MarkdownTextView)
     var documentDirectory: URL? { get }
 }
 
@@ -12,6 +14,7 @@ final class MarkdownTextView: NSTextView {
     weak var markdownDelegate: MarkdownTextViewDelegate?
     var mode: EditorMode = .wysiwyg
     var editorSettings = EditorSettings.default
+    var extraBlockSpacing: [Int: CGFloat] = [:]
     private var isApplyingStyles = false
     private var styleGeneration: UInt64 = 0
     private var ownedContentStorage: NSTextContentStorage?
@@ -41,6 +44,8 @@ final class MarkdownTextView: NSTextView {
     }
 
     private func configure() {
+        isEditable = true
+        isSelectable = true
         isRichText = true
         importsGraphics = false
         allowsImageEditing = false
@@ -50,6 +55,14 @@ final class MarkdownTextView: NSTextView {
         isAutomaticSpellingCorrectionEnabled = true
         isAutomaticDataDetectionEnabled = false
         isAutomaticLinkDetectionEnabled = false
+        isAutomaticTextCompletionEnabled = false
+        smartInsertDeleteEnabled = false
+        linkTextAttributes = [
+            .foregroundColor: NSColor.systemBlue,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+            .cursor: NSCursor.pointingHand
+        ]
+        enabledTextCheckingTypes = 0
         usesFindBar = true
         isIncrementalSearchingEnabled = true
         usesInspectorBar = false
@@ -67,15 +80,27 @@ final class MarkdownTextView: NSTextView {
         if let storage = textStorage {
             storage.delegate = self
         }
+        allowsUndo = true
+    }
+
+    override var undoManager: UndoManager? {
+        window?.undoManager ?? super.undoManager
     }
 
     func applyStyles() {
         guard let storage = textStorage, !isApplyingStyles else { return }
         isApplyingStyles = true
         let selection = selectedRange()
-        undoManager?.disableUndoRegistration()
-        StyleEngine.apply(to: storage, mode: mode, settings: editorSettings, selection: selection)
-        undoManager?.enableUndoRegistration()
+        let um = window?.undoManager ?? undoManager
+        um?.disableUndoRegistration()
+        StyleEngine.apply(
+            to: storage,
+            mode: mode,
+            settings: editorSettings,
+            selection: selection,
+            extraBlockSpacing: extraBlockSpacing
+        )
+        um?.enableUndoRegistration()
         typingAttributes = [
             .font: Theme.bodyFont(editorSettings),
             .foregroundColor: Theme.bodyColor(darkPaper: editorSettings.darkPaper)
@@ -84,12 +109,49 @@ final class MarkdownTextView: NSTextView {
     }
 
     func applyEdit(_ result: EditResult) {
-        let full = NSRange(location: 0, length: (string as NSString).length)
-        insertText(result.text, replacementRange: full)
+        let old = string
+        let full = NSRange(location: 0, length: (old as NSString).length)
+        guard old != result.text else {
+            setSelectedRange(result.selected)
+            return
+        }
+        if shouldChangeText(in: full, replacementString: result.text) {
+            textStorage?.replaceCharacters(in: full, with: result.text)
+            didChangeText()
+        }
         setSelectedRange(result.selected)
     }
 
+    func setDocumentText(_ text: String) {
+        let um = window?.undoManager ?? undoManager
+        um?.disableUndoRegistration()
+        let full = NSRange(location: 0, length: (string as NSString).length)
+        textStorage?.replaceCharacters(in: full, with: text)
+        um?.enableUndoRegistration()
+        um?.removeAllActions(withTarget: self)
+        setSelectedRange(NSRange(location: 0, length: 0))
+    }
+
     func currentSource() -> String { string }
+
+    override func insertText(_ insertString: Any, replacementRange: NSRange) {
+        let text = (insertString as? String) ?? (insertString as? NSAttributedString)?.string ?? ""
+        if string.isEmpty, !text.isEmpty {
+            let range = NSRange(location: 0, length: 0)
+            if shouldChangeText(in: range, replacementString: text) {
+                textStorage?.replaceCharacters(in: range, with: text)
+                didChangeText()
+            }
+            setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+            return
+        }
+        if mode == .wysiwyg, let snapped = MarkdownEditing.snapOutOfHeadingRule(source: string, selected: selectedRange()) {
+            setSelectedRange(snapped)
+            super.insertText(insertString, replacementRange: snapped)
+            return
+        }
+        super.insertText(insertString, replacementRange: replacementRange)
+    }
 
     override func didChangeText() {
         super.didChangeText()
@@ -97,10 +159,106 @@ final class MarkdownTextView: NSTextView {
         markdownDelegate?.markdownTextView(self, didRequestRelayout: ())
     }
 
+    override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let isZ = event.charactersIgnoringModifiers?.lowercased() == "z"
+        if isZ, flags.contains(.control) || flags.contains(.command) {
+            if flags.contains(.shift) {
+                redoMarkdown()
+            } else {
+                undoMarkdown()
+            }
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    @objc func undoMarkdown() {
+        (window?.undoManager ?? undoManager)?.undo()
+    }
+
+    @objc func redoMarkdown() {
+        (window?.undoManager ?? undoManager)?.redo()
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if let paged = superview as? PagedEditorView, paged.pageCount > 0 {
+            NSGraphicsContext.saveGraphicsState()
+            let clip = NSBezierPath()
+            for index in 0..<paged.pageCount {
+                var content = paged.paperRect(page: index).insetBy(
+                    dx: paged.geometry.margin,
+                    dy: paged.geometry.margin
+                )
+                content.origin.x -= frame.minX
+                content.origin.y -= frame.minY
+                clip.appendRect(content)
+            }
+            clip.addClip()
+            super.draw(dirtyRect)
+            NSGraphicsContext.restoreGraphicsState()
+            return
+        }
+        super.draw(dirtyRect)
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        isAutomaticQuoteSubstitutionEnabled = false
+        isAutomaticDashSubstitutionEnabled = false
+        isAutomaticTextReplacementEnabled = false
+        smartInsertDeleteEnabled = false
+        return super.becomeFirstResponder()
+    }
+
     override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting stillSelectingFlag: Bool) {
         super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelectingFlag)
         if !stillSelectingFlag {
-            applyStyles()
+            markdownDelegate?.markdownTextViewDidChangeSelection(self)
+        }
+    }
+
+    override func clicked(onLink link: Any, at charIndex: Int) {
+        if NSEvent.modifierFlags.contains(.command) {
+            let url = (link as? URL)?.absoluteString ?? (link as? String) ?? MarkdownEditing.link(at: charIndex, in: string)?.url
+            if let url { Hyperlink.open(url, relativeTo: markdownDelegate?.documentDirectory) }
+            return
+        }
+        setSelectedRange(NSRange(location: charIndex, length: 0))
+        snapCaretOutOfLinkMarkers()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if mode == .wysiwyg, event.modifierFlags.contains(.command) {
+            let index = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
+            if let link = MarkdownEditing.link(at: index, in: string) {
+                Hyperlink.open(link.url, relativeTo: markdownDelegate?.documentDirectory)
+                return
+            }
+        }
+        super.mouseDown(with: event)
+        if mode == .wysiwyg, !event.modifierFlags.contains(.shift) {
+            snapCaretOutOfLinkMarkers()
+            snapCaretOutOfHeadingRule()
+        }
+    }
+
+    func snapCaretOutOfHeadingRule() {
+        guard mode == .wysiwyg else { return }
+        if let snapped = MarkdownEditing.snapOutOfHeadingRule(source: string, selected: selectedRange()) {
+            setSelectedRange(snapped)
+        }
+    }
+
+    /// Hidden `[` / `](url)` markers must not steal the caret; the label stays editable.
+    func snapCaretOutOfLinkMarkers() {
+        guard mode == .wysiwyg else { return }
+        let range = selectedRange()
+        guard range.length == 0, let link = MarkdownEditing.link(at: range.location, in: string) else { return }
+        let text = link.textRange
+        if range.location < text.location {
+            setSelectedRange(NSRange(location: text.location, length: 0))
+        } else if range.location > NSMaxRange(text) {
+            setSelectedRange(NSRange(location: NSMaxRange(text), length: 0))
         }
     }
 
@@ -196,19 +354,19 @@ final class MarkdownTextView: NSTextView {
     }
 
     @objc func toggleBoldfaceMarkdown(_ sender: Any?) {
-        applyEdit(MarkdownEditing.toggleWrap(source: string, selected: selectedRange(), left: "**", right: "**"))
+        applyEdit(MarkdownEditing.toggleInline(source: string, selected: selectedRange(), left: "**", right: "**", kind: .strong))
     }
 
     @objc func toggleItalicsMarkdown(_ sender: Any?) {
-        applyEdit(MarkdownEditing.toggleWrap(source: string, selected: selectedRange(), left: "*", right: "*"))
+        applyEdit(MarkdownEditing.toggleInline(source: string, selected: selectedRange(), left: "*", right: "*", kind: .emphasis))
     }
 
     @objc func toggleStrikethroughMarkdown(_ sender: Any?) {
-        applyEdit(MarkdownEditing.toggleWrap(source: string, selected: selectedRange(), left: "~~", right: "~~"))
+        applyEdit(MarkdownEditing.toggleInline(source: string, selected: selectedRange(), left: "~~", right: "~~", kind: .strikethrough))
     }
 
     @objc func toggleInlineCodeMarkdown(_ sender: Any?) {
-        applyEdit(MarkdownEditing.toggleWrap(source: string, selected: selectedRange(), left: "`", right: "`"))
+        applyEdit(MarkdownEditing.toggleInline(source: string, selected: selectedRange(), left: "`", right: "`", kind: .inlineCode))
     }
 
     func applyHeading(_ level: Int) {
@@ -220,18 +378,10 @@ final class MarkdownTextView: NSTextView {
     }
 
     func applyLink() {
-        let alert = NSAlert()
-        alert.messageText = "Insert Link"
-        alert.informativeText = "URL"
-        alert.addButton(withTitle: "Insert")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(string: "https://")
-        field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        if alert.runModal() == .alertFirstButtonReturn {
-            applyEdit(MarkdownEditing.insertLink(source: string, selected: selectedRange(), url: field.stringValue))
+        if MarkdownEditing.link(at: selectedRange().location, in: string) == nil {
+            applyEdit(MarkdownEditing.insertLink(source: string, selected: selectedRange(), url: "https://"))
         }
+        markdownDelegate?.markdownTextViewDidRequestLinkCard(self)
     }
 
     func applyImage() {
@@ -244,8 +394,8 @@ final class MarkdownTextView: NSTextView {
         }
     }
 
-    func applyTable() {
-        applyEdit(MarkdownEditing.insertTable(source: string, selected: selectedRange()))
+    func applyTable(rows: Int = 2, columns: Int = 3) {
+        applyEdit(MarkdownEditing.insertTable(source: string, selected: selectedRange(), rows: rows, columns: columns))
     }
 
     func applyCodeBlock() {

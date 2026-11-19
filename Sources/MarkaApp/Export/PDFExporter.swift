@@ -52,10 +52,12 @@ enum PDFExporter {
         let paper = CGRect(origin: .zero, size: geometry.paperSize)
         Theme.paperColor(darkPaper: canvas.darkPaper).setFill()
         paper.fill()
+        canvas.drawExportChrome(page: index, phase: .behindText)
 
-        let pad = PageGeometry.canvasPadding
-        let paperOnCanvas = PageLayout.paperRect(pageIndex: index, geometry: geometry, padding: pad)
-        let textOrigin = CGPoint(x: pad + geometry.margin, y: pad + geometry.margin)
+        let padX = canvas.horizontalPadding
+        let padY = PageGeometry.canvasPadding
+        let paperOnCanvas = PageLayout.paperRect(pageIndex: index, geometry: geometry, paddingX: padX, paddingY: padY)
+        let textOrigin = CGPoint(x: padX + geometry.margin, y: padY + geometry.margin)
 
         if let tlm = canvas.textView.textLayoutManager {
             tlm.ensureLayout(for: tlm.documentRange)
@@ -86,6 +88,8 @@ enum PDFExporter {
             lm.drawGlyphs(forGlyphRange: lm.glyphRange(forBoundingRect: used, in: container), at: origin)
             NSGraphicsContext.current?.cgContext.restoreGState()
         }
+
+        canvas.drawExportChrome(page: index, phase: .aboveText)
 
         if geometry.showPageNumbers {
             let label = "\(index + 1)" as NSString

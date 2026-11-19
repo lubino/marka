@@ -46,6 +46,68 @@ public struct MarkdownDocumentOutline: Equatable, Sendable {
 
 /// Range-accurate GFM-ish parser. The source string is never rewritten.
 public enum MarkdownSyntax {
+    public struct FencedCodeBlock: Equatable, Sendable {
+        public var group: NSRange
+        public var language: String?
+        public var content: NSRange
+        public var innerText: String
+    }
+
+    public static func codeBlocks(in source: String) -> [FencedCodeBlock] {
+        let ns = source as NSString
+        var map: [Int: FencedCodeBlock] = [:]
+        for span in spans(in: source) {
+            guard case .codeBlock(let language) = span.kind else { continue }
+            var block = map[span.group.location] ?? FencedCodeBlock(
+                group: span.group,
+                language: language,
+                content: NSRange(location: 0, length: 0),
+                innerText: ""
+            )
+            block.language = language
+            block.group = span.group
+            if span.role == .content {
+                block.content = span.range
+                var text = ns.substring(with: span.range)
+                if text.hasPrefix("\n") { text.removeFirst() }
+                if text.hasSuffix("\n") { text.removeLast() }
+                block.innerText = text
+            }
+            map[span.group.location] = block
+        }
+        return map.values.sorted { $0.group.location < $1.group.location }
+    }
+
+    public struct QuoteBlock: Equatable, Sendable {
+        public var group: NSRange
+        public var innerText: String
+    }
+
+    public static func quotes(in source: String) -> [QuoteBlock] {
+        var seen = Set<Int>()
+        var result: [QuoteBlock] = []
+        for span in spans(in: source) {
+            guard span.kind == .blockquote, span.role == .content else { continue }
+            if seen.contains(span.group.location) { continue }
+            seen.insert(span.group.location)
+            result.append(QuoteBlock(group: span.group, innerText: quoteInnerText(span.group, source: source)))
+        }
+        return result.sorted { $0.group.location < $1.group.location }
+    }
+
+    static func quoteInnerText(_ group: NSRange, source: String) -> String {
+        let raw = (source as NSString).substring(with: group)
+        let lines = raw.split(separator: "\n", omittingEmptySubsequences: false)
+        let stripped = lines.map { line -> String in
+            var s = String(line)
+            while s.hasPrefix(" ") || s.hasPrefix("\t") { s.removeFirst() }
+            if s.hasPrefix(">") { s.removeFirst() }
+            if s.hasPrefix(" ") { s.removeFirst() }
+            return s
+        }
+        return stripped.joined(separator: "\n").trimmingCharacters(in: .newlines)
+    }
+
     public static func outline(in source: String) -> [MarkdownDocumentOutline] {
         spans(in: source).compactMap { span in
             guard span.role == .content, case .heading(let level) = span.kind else { return nil }
@@ -57,6 +119,10 @@ public enum MarkdownSyntax {
     }
 
     public static func spans(in source: String) -> [StyleSpan] {
+        SpanMemo.shared.spans(in: source)
+    }
+
+    static func parseSpans(in source: String) -> [StyleSpan] {
         let ns = source as NSString
         let lines = splitLines(ns)
         var spans: [StyleSpan] = []
@@ -479,41 +545,10 @@ public enum MarkdownSyntax {
             return true
         }
 
-        // Inline code
         var i = range.location
         let limit = NSMaxRange(range)
-        while i < limit {
-            if ns.character(at: i) == 96, (i == range.location || ns.character(at: i - 1) != 92) {
-                var ticks = 1
-                while i + ticks < limit && ns.character(at: i + ticks) == 96 { ticks += 1 }
-                var j = i + ticks
-                while j + ticks <= limit {
-                    var k = 0
-                    while k < ticks && ns.character(at: j + k) == 96 { k += 1 }
-                    if k == ticks {
-                        let group = NSRange(location: i, length: (j + ticks) - i)
-                        if free(group) {
-                            spans.append(StyleSpan(range: NSRange(location: i, length: ticks), kind: .inlineCode, role: .marker, group: group))
-                            let inner = NSRange(location: i + ticks, length: j - (i + ticks))
-                            if inner.length > 0 {
-                                spans.append(StyleSpan(range: inner, kind: .inlineCode, role: .content, group: group))
-                            }
-                            spans.append(StyleSpan(range: NSRange(location: j, length: ticks), kind: .inlineCode, role: .marker, group: group))
-                            mark(group)
-                        }
-                        i = j + ticks
-                        break
-                    }
-                    j += 1
-                }
-                if j + ticks > limit { i += 1 }
-            } else {
-                i += 1
-            }
-        }
 
-        // Images then links: ![alt](url) and [text](url)
-        i = range.location
+        // Images then links first so [`README.md`](./README.md) is a link wrapping inline code.
         while i < limit {
             let isImage = ns.character(at: i) == 33 && i + 1 < limit && ns.character(at: i + 1) == 91
             let isLink = ns.character(at: i) == 91
@@ -545,6 +580,38 @@ public enum MarkdownSyntax {
                 }
             }
             i += 1
+        }
+
+        i = range.location
+        while i < limit {
+            if occupied.indices.contains(i), occupied[i] { i += 1; continue }
+            if ns.character(at: i) == 96, (i == range.location || ns.character(at: i - 1) != 92) {
+                var ticks = 1
+                while i + ticks < limit && ns.character(at: i + ticks) == 96 { ticks += 1 }
+                var j = i + ticks
+                while j + ticks <= limit {
+                    var k = 0
+                    while k < ticks && ns.character(at: j + k) == 96 { k += 1 }
+                    if k == ticks {
+                        let group = NSRange(location: i, length: (j + ticks) - i)
+                        if free(group) {
+                            spans.append(StyleSpan(range: NSRange(location: i, length: ticks), kind: .inlineCode, role: .marker, group: group))
+                            let inner = NSRange(location: i + ticks, length: j - (i + ticks))
+                            if inner.length > 0 {
+                                spans.append(StyleSpan(range: inner, kind: .inlineCode, role: .content, group: group))
+                            }
+                            spans.append(StyleSpan(range: NSRange(location: j, length: ticks), kind: .inlineCode, role: .marker, group: group))
+                            mark(group)
+                        }
+                        i = j + ticks
+                        break
+                    }
+                    j += 1
+                }
+                if j + ticks > limit { i += 1 }
+            } else {
+                i += 1
+            }
         }
 
         func delimited(_ marker: String, kind: StyleKind) {
@@ -612,6 +679,24 @@ public enum MarkdownSyntax {
         let loc = min(a.location, b.location)
         let end = max(NSMaxRange(a), NSMaxRange(b))
         return NSRange(location: loc, length: end - loc)
+    }
+}
+
+/// Last parse only — `applyStyles`, the format toolbar, and heading rules all walk the same source.
+private final class SpanMemo: @unchecked Sendable {
+    static let shared = SpanMemo()
+    private let lock = NSLock()
+    private var source: String?
+    private var spans: [StyleSpan] = []
+
+    func spans(in source: String) -> [StyleSpan] {
+        lock.lock()
+        defer { lock.unlock() }
+        if self.source == source { return spans }
+        let parsed = MarkdownSyntax.parseSpans(in: source)
+        self.source = source
+        self.spans = parsed
+        return parsed
     }
 }
 

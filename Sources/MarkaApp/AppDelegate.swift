@@ -2,7 +2,11 @@ import AppKit
 import MarkaCore
 
 final class MarkaDocumentController: NSDocumentController {
-    override var defaultType: String? { "net.daringfireball.markdown" }
+    override var defaultType: String? { "Markdown Document" }
+
+    override func documentClass(forType typeName: String) -> AnyClass? {
+        MarkdownDocument.self
+    }
 }
 
 @MainActor
@@ -10,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = true
         buildMenu()
+        CrashReporter.presentPendingReportIfNeeded()
         if NSDocumentController.shared.documents.isEmpty {
             _ = try? NSDocumentController.shared.openUntitledDocumentAndDisplay(true)
         }
@@ -59,8 +64,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let editItem = NSMenuItem()
         let edit = NSMenu(title: "Edit")
-        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        edit.addItem(withTitle: "Undo", action: #selector(DocumentWindowController.undoAction), keyEquivalent: "z")
+        let redo = edit.addItem(withTitle: "Redo", action: #selector(DocumentWindowController.redoAction), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        let undoControl = edit.addItem(withTitle: "Undo", action: #selector(DocumentWindowController.undoAction), keyEquivalent: "z")
+        undoControl.keyEquivalentModifierMask = [.control]
+        undoControl.isHidden = true
+        let redoControl = edit.addItem(withTitle: "Redo", action: #selector(DocumentWindowController.redoAction), keyEquivalent: "z")
+        redoControl.keyEquivalentModifierMask = [.control, .shift]
+        redoControl.isHidden = true
         edit.addItem(.separator())
         edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
@@ -81,9 +93,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         format.addItem(withTitle: "Strikethrough", action: #selector(DocumentWindowController.strikeAction), keyEquivalent: "")
         format.addItem(withTitle: "Inline Code", action: #selector(DocumentWindowController.codeAction), keyEquivalent: "")
         format.addItem(.separator())
-        format.addItem(withTitle: "Heading 1", action: #selector(applyH1), keyEquivalent: "1").keyEquivalentModifierMask = [.command, .option]
-        format.addItem(withTitle: "Heading 2", action: #selector(applyH2), keyEquivalent: "2").keyEquivalentModifierMask = [.command, .option]
-        format.addItem(withTitle: "Heading 3", action: #selector(applyH3), keyEquivalent: "3").keyEquivalentModifierMask = [.command, .option]
+        format.addItem(withTitle: "Heading 1", action: #selector(DocumentWindowController.applyHeading1), keyEquivalent: "1").keyEquivalentModifierMask = [.command, .option]
+        format.addItem(withTitle: "Heading 2", action: #selector(DocumentWindowController.applyHeading2), keyEquivalent: "2").keyEquivalentModifierMask = [.command, .option]
+        format.addItem(withTitle: "Heading 3", action: #selector(DocumentWindowController.applyHeading3), keyEquivalent: "3").keyEquivalentModifierMask = [.command, .option]
         format.addItem(.separator())
         format.addItem(withTitle: "Bulleted List", action: #selector(DocumentWindowController.listAction), keyEquivalent: "")
         format.addItem(withTitle: "Numbered List", action: #selector(DocumentWindowController.orderedListAction), keyEquivalent: "")
@@ -92,14 +104,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         format.addItem(withTitle: "Code Block", action: #selector(DocumentWindowController.codeBlockAction), keyEquivalent: "")
         format.addItem(withTitle: "Link…", action: #selector(DocumentWindowController.linkAction), keyEquivalent: "k")
         format.addItem(withTitle: "Image…", action: #selector(DocumentWindowController.imageAction), keyEquivalent: "")
-        format.addItem(withTitle: "Table", action: #selector(DocumentWindowController.tableAction), keyEquivalent: "")
+        format.addItem(withTitle: "Insert Table", action: #selector(DocumentWindowController.tableAction(_:)), keyEquivalent: "")
         format.addItem(withTitle: "Horizontal Rule", action: #selector(DocumentWindowController.ruleAction), keyEquivalent: "")
         format.addItem(withTitle: "Page Break", action: #selector(DocumentWindowController.pageBreakAction), keyEquivalent: "")
         format.addItem(.separator())
-        format.addItem(withTitle: "Add Table Row", action: #selector(DocumentWindowController.addTableRow), keyEquivalent: "")
-        format.addItem(withTitle: "Add Table Column", action: #selector(DocumentWindowController.addTableColumn), keyEquivalent: "")
-        format.addItem(withTitle: "Delete Table Row", action: #selector(DocumentWindowController.deleteTableRow), keyEquivalent: "")
-        format.addItem(withTitle: "Delete Table Column", action: #selector(DocumentWindowController.deleteTableColumn), keyEquivalent: "")
+        let tableItem = NSMenuItem(title: "Table", action: nil, keyEquivalent: "")
+        let table = NSMenu(title: "Table")
+        table.addItem(withTitle: "Insert Row Above", action: #selector(DocumentWindowController.insertTableRowAbove), keyEquivalent: "")
+        table.addItem(withTitle: "Insert Row Below", action: #selector(DocumentWindowController.insertTableRowBelow), keyEquivalent: "")
+        table.addItem(withTitle: "Insert Column Left", action: #selector(DocumentWindowController.insertTableColumnLeft), keyEquivalent: "")
+        table.addItem(withTitle: "Insert Column Right", action: #selector(DocumentWindowController.insertTableColumnRight), keyEquivalent: "")
+        table.addItem(.separator())
+        table.addItem(withTitle: "Delete Row", action: #selector(DocumentWindowController.deleteTableRow), keyEquivalent: "")
+        table.addItem(withTitle: "Delete Column", action: #selector(DocumentWindowController.deleteTableColumn), keyEquivalent: "")
+        table.addItem(withTitle: "Delete Table", action: #selector(DocumentWindowController.deleteTable), keyEquivalent: "")
+        tableItem.submenu = table
+        format.addItem(tableItem)
         formatItem.submenu = format
         main.addItem(formatItem)
 
@@ -108,10 +128,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         view.addItem(withTitle: "Toggle Sidebar", action: #selector(DocumentWindowController.toggleSidebar), keyEquivalent: "s").keyEquivalentModifierMask = [.command, .option]
         view.addItem(withTitle: "Source Mode", action: #selector(DocumentWindowController.toggleSourceMode), keyEquivalent: "/")
         view.addItem(.separator())
+        view.addItem(withTitle: "Auto Width", action: #selector(DocumentWindowController.zoomAuto), keyEquivalent: "")
+        view.addItem(withTitle: "Wide", action: #selector(DocumentWindowController.zoomWide), keyEquivalent: "")
         view.addItem(withTitle: "Zoom In", action: #selector(DocumentWindowController.zoomIn), keyEquivalent: "+")
         view.addItem(withTitle: "Zoom Out", action: #selector(DocumentWindowController.zoomOut), keyEquivalent: "-")
         view.addItem(withTitle: "Actual Size", action: #selector(DocumentWindowController.zoomActual), keyEquivalent: "0")
-        view.addItem(withTitle: "Fit Width", action: #selector(DocumentWindowController.zoomFitWidth), keyEquivalent: "")
         viewItem.submenu = view
         main.addItem(viewItem)
 
@@ -134,23 +155,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = main
     }
 
-    @objc private func applyH1() { currentWindow()?.textViewHeading(1) }
-    @objc private func applyH2() { currentWindow()?.textViewHeading(2) }
-    @objc private func applyH3() { currentWindow()?.textViewHeading(3) }
-
-    private func currentWindow() -> DocumentWindowController? {
-        NSApp.mainWindow?.windowController as? DocumentWindowController
-    }
-
     @objc private func openHelp() {
         if let url = URL(string: "https://github.com/lubino/marka") {
             NSWorkspace.shared.open(url)
         }
-    }
-}
-
-extension DocumentWindowController {
-    func textViewHeading(_ level: Int) {
-        (window?.firstResponder as? MarkdownTextView)?.applyHeading(level)
     }
 }
