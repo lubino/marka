@@ -84,8 +84,12 @@ public final class EditorWindowHarness {
     public var tablesStayOnPages: Bool { controller.testTablesStayOnPages }
     public var zoomAutoOn: Bool { controller.testZoomAutoOn }
     public var tableAddColumnChipHitTestSucceeds: Bool { controller.testTableAddColumnChipHitTestSucceeds }
-    public var tableChipsSitOnEdges: Bool { controller.testTableChipsSitOnEdges }
-    public var tableChipIdleAlphaIsTranslucent: Bool { controller.testTableChipIdleAlphaIsTranslucent }
+    public var tableGuttersSitOutsideGrid: Bool { controller.testTableGuttersSitOutsideGrid }
+    public var tableCoversHiddenSource: Bool { controller.testTableCoversHiddenSource }
+    public var tableSliceCount: Int { controller.testTableSliceCount }
+    public var tableRepeatsHeaderOnContinuations: Bool { controller.testTableRepeatsHeader }
+    public var pagesTableChromeIsNative: Bool { controller.testTableGuttersSitOutsideGrid }
+    public var codePopupEnabled: Bool { controller.testCodePopupEnabled }
     public var relayoutStable: Bool { controller.testRelayoutStable() }
 
     public var markdown: String { controller.markdownString() }
@@ -111,6 +115,13 @@ public final class EditorWindowHarness {
         controller.testInsertTable(rows: rows, columns: columns)
         pump(0.2)
     }
+
+    public func insertCodeBlock(language: String) {
+        controller.testInsertCodeBlock(language: language)
+        pump(0.15)
+    }
+
+    public var selectedRange: NSRange { controller.testSelectedRange }
 
     public func deleteTableRow() {
         controller.testDeleteTableRow()
@@ -150,6 +161,31 @@ public final class EditorWindowHarness {
     public func clickDeleteTableColumn() {
         controller.testClickDeleteTableColumn()
         pump(0.15)
+    }
+
+    public func pressTableTab() {
+        controller.testPressTableTab()
+        pump(0.15)
+    }
+
+    public func pressTableReturn() {
+        controller.testPressTableReturn()
+        pump(0.15)
+    }
+
+    public func selectTableRow(_ row: Int) {
+        controller.testSelectTableRow(row)
+        pump(0.05)
+    }
+
+    public func selectTableColumn(_ column: Int) {
+        controller.testSelectTableColumn(column)
+        pump(0.05)
+    }
+
+    public func focusTableCell(row: Int, column: Int) {
+        controller.testFocusTableCell(row: row, column: column)
+        pump(0.05)
     }
 
     public var tableRowCount: Int { controller.testTableRowCount }

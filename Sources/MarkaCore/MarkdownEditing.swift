@@ -57,6 +57,7 @@ public enum MarkdownEditing {
         public var taskList = false
         public var inTable = false
         public var inCodeBlock = false
+        public var codeBlockLanguage: String?
         public var inThematicBreak = false
         public var inPageBreak = false
     }
@@ -147,8 +148,9 @@ public enum MarkdownEditing {
                 else { state.unorderedList = true }
             case .table:
                 state.inTable = true
-            case .codeBlock:
+            case .codeBlock(let language):
                 state.inCodeBlock = true
+                state.codeBlockLanguage = language
             case .thematicBreak:
                 state.inThematicBreak = true
             case .pageBreak:
@@ -419,10 +421,55 @@ public enum MarkdownEditing {
     public static func insertCodeBlock(source: String, selected: NSRange, language: String = "") -> EditResult {
         let ns = source as NSString
         let inner = selected.length > 0 ? ns.substring(with: selected) : ""
-        let replacement = "```\(language)\n\(inner)\n```"
-        let new = ns.replacingCharacters(in: selected, with: replacement)
-        let caret = selected.location + 3 + (language as NSString).length + 1
+        let open = "```\(language)\n"
+        let close = "\n```"
+        var block = open + inner + close
+        let replace: NSRange
+        var prefix = 0
+        if selected.length > 0 {
+            replace = selected
+        } else {
+            let at = min(max(0, selected.location), ns.length)
+            let needLeading = at > 0 && ns.character(at: at - 1) != 10
+            let needTrailing = at < ns.length && ns.character(at: at) != 10
+            prefix = needLeading ? 1 : 0
+            block = (needLeading ? "\n" : "") + block + (needTrailing ? "\n" : "")
+            replace = NSRange(location: at, length: 0)
+        }
+        let new = ns.replacingCharacters(in: replace, with: block)
+        let caret = replace.location + prefix + (open as NSString).length
         return EditResult(text: new, selected: NSRange(location: caret, length: (inner as NSString).length))
+    }
+
+    /// Retarget the opening fence language when the caret is already inside a fenced block.
+    public static func setCodeBlockLanguage(source: String, selected: NSRange, language: String) -> EditResult? {
+        let ns = source as NSString
+        guard ns.length > 0 else { return nil }
+        let loc = min(max(0, selected.location), ns.length - 1)
+        let spans = MarkdownSyntax.spans(in: source)
+        guard let marker = spans.first(where: {
+            if case .codeBlock = $0.kind, $0.role == .marker, $0.range.location == $0.group.location {
+                return NSLocationInRange(loc, $0.group) || loc == $0.group.location
+            }
+            return false
+        }) else { return nil }
+        let line = ns.substring(with: marker.range)
+        var fenceLen = 0
+        for ch in line {
+            if ch == "`" || ch == "~" { fenceLen += 1 } else { break }
+        }
+        guard fenceLen >= 3 else { return nil }
+        let fence = String(line.prefix(fenceLen))
+        let indent = line.prefix(while: { $0 == " " || $0 == "\t" })
+        let replacement = "\(indent)\(fence)\(language)"
+        let new = ns.replacingCharacters(in: marker.range, with: replacement)
+        let delta = (replacement as NSString).length - marker.range.length
+        var caret = selected.location
+        if selected.location >= NSMaxRange(marker.range) {
+            caret += delta
+        }
+        caret = min(max(0, caret), (new as NSString).length)
+        return EditResult(text: new, selected: NSRange(location: caret, length: selected.length))
     }
 
     public static func insertHorizontalRule(source: String, selected: NSRange) -> EditResult {

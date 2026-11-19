@@ -9,14 +9,14 @@ final class PagedEditorView: NSView {
     private(set) var pageCount = 1
     var codeHeaderCount: Int { codeHeaders.count }
     var codeBackgroundCount: Int { codeBackgrounds.count }
-    var tableOverlayCount: Int { tableOverlays.count }
+    var tableOverlayCount: Int { pagesTables.count }
     var onPagesChanged: ((Int) -> Void)?
     var onEditContextChanged: (() -> Void)?
     var documentDirectory: URL?
     private var imageOverlays: [NSImageView] = []
     private var codeBackgrounds: [CodeBlockBackgroundView] = []
     private var codeHeaders: [CodeBlockHeaderView] = []
-    private var tableOverlays: [TableOverlayView] = []
+    private var pagesTables: [PagesTableView] = []
     private let linkCard = LinkCardView(frame: .zero)
     private var relayoutQueued = false
     private var isRelayouting = false
@@ -453,7 +453,7 @@ final class PagedEditorView: NSView {
     func tablesStayOnPages() -> Bool {
         let padX = horizontalPadding
         let padY = PageGeometry.canvasPadding
-        for overlay in tableOverlays {
+        for overlay in pagesTables {
             for rect in overlay.chromeRects() {
                 var canvas = rect
                 canvas.origin.x += overlay.frame.minX
@@ -569,27 +569,36 @@ final class PagedEditorView: NSView {
     }
 
     func tableAddColumnChipHitTestSucceeds() -> Bool {
-        tableOverlays.first?.addColumnChipHitTest(in: self) ?? false
+        pagesTables.first?.addColumnChipHitTest(in: self) ?? false
     }
 
-    func tableChipsSitOnEdges() -> Bool {
-        tableOverlays.first?.chipsSitOnEdges() ?? false
+    func tableGuttersSitOutsideGrid() -> Bool {
+        pagesTables.first?.pagesChromeIsNative() ?? false
     }
 
-    func tableChipIdleAlphaIsTranslucent() -> Bool {
-        tableOverlays.first?.chipIdleAlphaIsTranslucent() ?? false
+    func tableCoversHiddenSource() -> Bool {
+        pagesTables.first?.coversHiddenSource() ?? false
     }
 
     var extraBlockSpacingSnapshot: [Int: CGFloat] { textView.extraBlockSpacing }
 
-    var firstTableRowCount: Int { tableOverlays.first?.storageRowCount ?? 0 }
-    var firstTableColumnCount: Int { tableOverlays.first?.storageColumnCount ?? 0 }
-    var firstTableHasFieldFocus: Bool { tableOverlays.first?.hasFieldFocus ?? false }
+    var firstTableRowCount: Int { pagesTables.first?.storageRowCount ?? 0 }
+    var firstTableColumnCount: Int { pagesTables.first?.storageColumnCount ?? 0 }
+    var firstTableHasFieldFocus: Bool { pagesTables.first?.hasFieldFocus ?? false }
+    var firstTableSliceCount: Int { pagesTables.first?.sliceCount ?? 0 }
+    var firstTableRepeatsHeader: Bool { pagesTables.first?.continuationRepeatsHeader ?? false }
 
-    func clickFirstTableAddRow() { tableOverlays.first?.clickAddRow() }
-    func clickFirstTableAddColumn() { tableOverlays.first?.clickAddColumn() }
-    func clickFirstTableDeleteRow() { tableOverlays.first?.clickDeleteRow() }
-    func clickFirstTableDeleteColumn() { tableOverlays.first?.clickDeleteColumn() }
+    func clickFirstTableAddRow() { pagesTables.first?.clickAddRow() }
+    func clickFirstTableAddColumn() { pagesTables.first?.clickAddColumn() }
+    func clickFirstTableDeleteRow() { pagesTables.first?.clickDeleteRow() }
+    func clickFirstTableDeleteColumn() { pagesTables.first?.clickDeleteColumn() }
+    func pressFirstTableTab() { pagesTables.first?.pressTab() }
+    func pressFirstTableReturn() { pagesTables.first?.pressReturn() }
+    func selectFirstTableRow(_ row: Int) { pagesTables.first?.selectRow(row) }
+    func selectFirstTableColumn(_ column: Int) { pagesTables.first?.selectColumn(column) }
+    func focusFirstTableCell(row: Int, column: Int) {
+        pagesTables.first?.focusCell(row: row, column: column, stealFocus: true)
+    }
 
     private func enterEvent(for view: NSView) -> NSEvent? {
         guard let window = view.window else { return nil }
@@ -666,10 +675,10 @@ final class PagedEditorView: NSView {
             let loc = block.range.location
             let flow = PageLayout.flowTableRows(
                 startY: caretY(at: loc),
-                storageRows: TableOverlayView.storageRows(for: block),
-                rowHeight: TableOverlayView.rowHeight,
-                topPad: TableOverlayView.edgeInset,
-                bottomPad: TableOverlayView.edgeInset,
+                storageRows: PagesTableView.storageRows(for: block),
+                rowHeight: PagesTableView.rowHeight,
+                topPad: PagesTableView.topPad,
+                bottomPad: PagesTableView.bottomPad,
                 geometry: geometry
             )
             spacing[loc] = flow.contentHeight
@@ -679,52 +688,52 @@ final class PagedEditorView: NSView {
 
     func refreshTables() {
         if textView.mode != .wysiwyg {
-            tableOverlays.forEach { $0.removeFromSuperview() }
-            tableOverlays.removeAll()
+            pagesTables.forEach { $0.removeFromSuperview() }
+            pagesTables.removeAll()
             return
         }
         let blocks = TableMutator.allBlocks(in: textView.string)
         let origin = textView.frame.origin
         let width = geometry.contentSize.width
-        var unused = tableOverlays
-        var next: [TableOverlayView] = []
+        var unused = pagesTables
+        var next: [PagesTableView] = []
         for block in blocks {
             let loc = block.range.location
-            let overlay: TableOverlayView
+            let table: PagesTableView
             if let index = unused.firstIndex(where: { $0.block.range.location == loc }) {
-                overlay = unused.remove(at: index)
+                table = unused.remove(at: index)
                 let focus = tableFocus.flatMap { $0.location == loc ? ($0.row, $0.column) : nil }
-                overlay.update(block: block, darkPaper: darkPaper, focus: focus)
+                table.update(block: block, darkPaper: darkPaper, focus: focus)
             } else {
-                overlay = TableOverlayView(block: block, darkPaper: darkPaper)
-                overlay.tableDelegate = self
-                addSubview(overlay, positioned: .above, relativeTo: textView)
+                table = PagesTableView(block: block, darkPaper: darkPaper)
+                table.tableDelegate = self
+                addSubview(table, positioned: .above, relativeTo: textView)
                 if let focus = tableFocus, focus.location == loc {
-                    overlay.update(block: block, darkPaper: darkPaper, focus: (focus.row, focus.column))
+                    table.update(block: block, darkPaper: darkPaper, focus: (focus.row, focus.column))
                 }
             }
-            _ = overlay.preferredSize(fitting: width)
+            _ = table.preferredSize(fitting: width)
             let startY = caretY(at: loc)
             let flow = PageLayout.flowTableRows(
                 startY: startY,
-                storageRows: overlay.storageRowsForFlow,
-                rowHeight: TableOverlayView.rowHeight,
-                topPad: TableOverlayView.edgeInset,
-                bottomPad: TableOverlayView.edgeInset,
+                storageRows: table.storageRowsForFlow,
+                rowHeight: PagesTableView.rowHeight,
+                topPad: PagesTableView.topPad,
+                bottomPad: PagesTableView.bottomPad,
                 geometry: geometry
             )
-            overlay.applyFlow(flow)
-            overlay.frame = CGRect(
+            table.applyFlow(flow)
+            table.frame = CGRect(
                 x: origin.x,
                 y: origin.y + flow.startY,
                 width: width,
-                height: overlay.paginationHeight
+                height: table.paginationHeight
             )
-            overlay.layoutSubtreeIfNeeded()
-            next.append(overlay)
+            table.layoutSubtreeIfNeeded()
+            next.append(table)
         }
         unused.forEach { $0.removeFromSuperview() }
-        tableOverlays = next
+        pagesTables = next
     }
 
     func spacingMatchesForTests(_ a: [Int: CGFloat], _ b: [Int: CGFloat]) -> Bool {
@@ -740,7 +749,7 @@ final class PagedEditorView: NSView {
     }
 
     func focusedTableCell() -> TableMutator.CellRef? {
-        if let overlay = tableOverlays.first(where: { $0.containsResponder(window?.firstResponder) }) {
+        if let overlay = pagesTables.first(where: { $0.containsResponder(window?.firstResponder) }) {
             return TableMutator.CellRef(block: overlay.block, row: overlay.selectedRow, column: overlay.selectedColumn)
         }
         return TableMutator.cell(at: textView.selectedRange().location, in: textView.string)
@@ -765,7 +774,7 @@ final class PagedEditorView: NSView {
         guard let block = TableMutator.block(at: loc, in: textView.string) else { return }
         tableFocus = (block.range.location, 0, 0)
         refreshTables()
-        tableOverlays.first(where: { $0.block.range.location == block.range.location })?.focusCell(row: 0, column: 0)
+        pagesTables.first(where: { $0.block.range.location == block.range.location })?.focusCell(row: 0, column: 0)
     }
 
     func insertTableRow(_ placement: RowPlacement) {
@@ -811,7 +820,7 @@ final class PagedEditorView: NSView {
 
     private func restoreTableFieldFocus() {
         guard let focus = tableFocus else { return }
-        tableOverlays.first(where: { $0.block.range.location == focus.location })?
+        pagesTables.first(where: { $0.block.range.location == focus.location })?
             .focusCell(row: focus.row, column: focus.column, stealFocus: true)
     }
 
@@ -890,7 +899,7 @@ final class PagedEditorView: NSView {
                 }
             }
         } else if textView.mode == .wysiwyg {
-            for overlay in tableOverlays {
+            for overlay in pagesTables {
                 overlay.drawExported(intoPage: paper, paperOnCanvas: paperOnCanvas)
             }
         }
@@ -925,8 +934,8 @@ extension PagedEditorView: @MainActor LinkCardDelegate {
     }
 }
 
-extension PagedEditorView: @MainActor TableOverlayDelegate {
-    func tableOverlay(_ view: TableOverlayView, commit row: Int, column: Int, text: String) {
+extension PagedEditorView: @MainActor PagesTableDelegate {
+    func pagesTable(_ view: PagesTableView, commit row: Int, column: Int, text: String) {
         let loc = view.block.range.location
         let current = row < view.block.rows.count && column < view.block.rows[row].count
             ? view.block.rows[row][column].trimmingCharacters(in: .whitespaces)
@@ -945,38 +954,38 @@ extension PagedEditorView: @MainActor TableOverlayDelegate {
         }
     }
 
-    func tableOverlay(_ view: TableOverlayView, insertRow placement: RowPlacement) {
+    func pagesTable(_ view: PagesTableView, insertRow placement: RowPlacement) {
         let cell = TableMutator.CellRef(block: view.block, row: view.selectedRow, column: view.selectedColumn)
         guard let result = TableMutator.insertRow(source: textView.string, cell: cell, placement: placement) else { return }
         applyTableEdit(result)
     }
 
-    func tableOverlay(_ view: TableOverlayView, insertColumn placement: ColumnPlacement) {
+    func pagesTable(_ view: PagesTableView, insertColumn placement: ColumnPlacement) {
         let cell = TableMutator.CellRef(block: view.block, row: view.selectedRow, column: view.selectedColumn)
         guard let result = TableMutator.insertColumn(source: textView.string, cell: cell, placement: placement) else { return }
         applyTableEdit(result)
     }
 
-    func tableOverlayDeleteRow(_ view: TableOverlayView) {
+    func pagesTableDeleteRow(_ view: PagesTableView) {
         let cell = TableMutator.CellRef(block: view.block, row: view.selectedRow, column: view.selectedColumn)
         guard let result = TableMutator.deleteRow(source: textView.string, cell: cell) else { return }
         applyTableEdit(result)
     }
 
-    func tableOverlayDeleteColumn(_ view: TableOverlayView) {
+    func pagesTableDeleteColumn(_ view: PagesTableView) {
         let cell = TableMutator.CellRef(block: view.block, row: view.selectedRow, column: view.selectedColumn)
         guard let result = TableMutator.deleteColumn(source: textView.string, cell: cell) else { return }
         applyTableEdit(result)
     }
 
-    func tableOverlayDeleteTable(_ view: TableOverlayView) {
+    func pagesTableDeleteTable(_ view: PagesTableView) {
         guard let result = TableMutator.deleteTable(source: textView.string, block: view.block) else { return }
         tableFocus = nil
         textView.applyEdit(result)
         relayout()
     }
 
-    func tableOverlayDidChangeFocus(_ view: TableOverlayView) {
+    func pagesTableDidChangeFocus(_ view: PagesTableView) {
         tableFocus = (view.block.range.location, view.selectedRow, view.selectedColumn)
         onEditContextChanged?()
     }

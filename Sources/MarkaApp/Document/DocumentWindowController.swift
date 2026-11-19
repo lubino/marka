@@ -11,6 +11,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
     private let canvas: PagedEditorView
     private var zoomAutoButton: NSButton?
     private var headingPopup: NSPopUpButton?
+    private var codePopup: NSPopUpButton?
     private var formatButtons: [NSToolbarItem.Identifier: NSButton] = [:]
     private var actionItems: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
     private var settingsController: SettingsWindowController?
@@ -230,7 +231,37 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         case .link:
             return toggleItem(itemIdentifier, title: "Link", symbol: "link", action: #selector(linkAction))
         case .code:
-            return toggleItem(itemIdentifier, title: "Code", symbol: "chevron.left.forwardslash.chevron.right", action: #selector(codeAction))
+            let popup = NSPopUpButton()
+            popup.pullsDown = true
+            popup.bezelStyle = .texturedRounded
+            popup.imagePosition = .imageLeading
+            popup.refusesFirstResponder = true
+            popup.target = self
+            popup.action = #selector(codeKindChanged(_:))
+            popup.toolTip = "Insert code"
+            popup.addItem(withTitle: "")
+            popup.item(at: 0)?.image = Self.symbol("curlybraces.square", fallback: "chevron.left.forwardslash.chevron.right")
+            let kinds: [(String, String, String)] = [
+                ("Inline Code", "chevron.left.forwardslash.chevron.right", "chevron.left.forwardslash.chevron.right"),
+                ("Text", "doc.plaintext", "doc.text"),
+                ("Bash", "terminal", "terminal"),
+                ("Python", "chevron.left.slash.chevron.right", "chevron.left.forwardslash.chevron.right"),
+                ("Swift", "swift", "curlybraces"),
+                ("JSON", "curlybraces", "curlybraces")
+            ]
+            for kind in kinds {
+                popup.addItem(withTitle: kind.0)
+                popup.lastItem?.image = Self.symbol(kind.1, fallback: kind.2)
+            }
+            codePopup = popup
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.view = popup
+            item.label = "Code"
+            item.paletteLabel = "Insert Code"
+            item.toolTip = "Insert inline code or a fenced block"
+            popup.sizeToFit()
+            popup.frame.size = NSSize(width: max(52, popup.frame.width), height: 24)
+            return item
         case .table:
             return buttonItem(itemIdentifier, title: "Table", symbol: "tablecells", action: #selector(tableAction(_:)))
         case .image:
@@ -350,15 +381,19 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
         formatButtons[.strike]?.state = format.strike ? .on : .off
         formatButtons[.lists]?.state = (format.unorderedList || format.orderedList || format.taskList) ? .on : .off
         formatButtons[.link]?.state = format.link ? .on : .off
-        formatButtons[.code]?.state = format.inlineCode ? .on : .off
         formatButtons[.bold]?.isEnabled = available.inline
         formatButtons[.italic]?.isEnabled = available.inline
         formatButtons[.strike]?.isEnabled = available.inline
         formatButtons[.lists]?.isEnabled = available.lists
         formatButtons[.link]?.isEnabled = available.link
-        formatButtons[.code]?.isEnabled = available.inlineCode
+        codePopup?.isEnabled = available.inlineCode || available.codeBlock
         actionItems[.table]?.isEnabled = available.table
         actionItems[.image]?.isEnabled = available.image
+    }
+
+    private static func symbol(_ name: String, fallback: String) -> NSImage? {
+        NSImage(systemSymbolName: name, accessibilityDescription: nil)
+            ?? NSImage(systemSymbolName: fallback, accessibilityDescription: nil)
     }
 
     func splitView(_ splitView: NSSplitView, canCollapse subview: NSView) -> Bool {
@@ -479,7 +514,8 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
     var testStrikeToolbarOn: Bool { formatButtons[.strike]?.state == .on }
     var testListToolbarOn: Bool { formatButtons[.lists]?.state == .on }
     var testLinkToolbarOn: Bool { formatButtons[.link]?.state == .on }
-    var testCodeToolbarOn: Bool { formatButtons[.code]?.state == .on }
+    var testCodeToolbarOn: Bool { currentFormat().inlineCode }
+    var testCodePopupEnabled: Bool { codePopup?.isEnabled ?? false }
     var testBoldToolbarEnabled: Bool { formatButtons[.bold]?.isEnabled ?? false }
     var testHeadingPopupEnabled: Bool { headingPopup?.isEnabled ?? false }
     var testTableToolbarEnabled: Bool { actionItems[.table]?.isEnabled ?? true }
@@ -489,8 +525,14 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
     var testFirstChipShowsRun: Bool { canvas.firstChipShowsRun }
     var testRunButtonHitTestSucceeds: Bool { canvas.runButtonHitTestSucceeds() }
     var testTableAddColumnChipHitTestSucceeds: Bool { canvas.tableAddColumnChipHitTestSucceeds() }
-    var testTableChipsSitOnEdges: Bool { canvas.tableChipsSitOnEdges() }
-    var testTableChipIdleAlphaIsTranslucent: Bool { canvas.tableChipIdleAlphaIsTranslucent() }
+    var testTableGuttersSitOutsideGrid: Bool { canvas.tableGuttersSitOutsideGrid() }
+    var testTableCoversHiddenSource: Bool { canvas.tableCoversHiddenSource() }
+    var testTableSliceCount: Int { canvas.firstTableSliceCount }
+    var testTableRepeatsHeader: Bool { canvas.firstTableRepeatsHeader }
+
+    func testInsertCodeBlock(language: String) {
+        insertFence(language)
+    }
 
     func testRelayoutStable() -> Bool {
         let beforePages = canvas.pageCount
@@ -517,6 +559,11 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
     func testClickAddTableColumn() { canvas.clickFirstTableAddColumn() }
     func testClickDeleteTableRow() { canvas.clickFirstTableDeleteRow() }
     func testClickDeleteTableColumn() { canvas.clickFirstTableDeleteColumn() }
+    func testPressTableTab() { canvas.pressFirstTableTab() }
+    func testPressTableReturn() { canvas.pressFirstTableReturn() }
+    func testSelectTableRow(_ row: Int) { canvas.selectFirstTableRow(row) }
+    func testSelectTableColumn(_ column: Int) { canvas.selectFirstTableColumn(column) }
+    func testFocusTableCell(row: Int, column: Int) { canvas.focusFirstTableCell(row: row, column: column) }
 
     var testTableRowCount: Int { canvas.firstTableRowCount }
     var testTableColumnCount: Int { canvas.firstTableColumnCount }
@@ -569,6 +616,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
     }
 
     var testEditorIsFirstResponder: Bool { window?.firstResponder === textView }
+    var testSelectedRange: NSRange { textView.selectedRange() }
 
     func testInsertTable(rows: Int, columns: Int) {
         textView.applyTable(rows: rows, columns: columns)
@@ -670,7 +718,42 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
     @objc func taskListAction() { textView.applyList(ordered: false, task: true) }
     @objc func linkAction() { textView.applyLink() }
     @objc func codeAction() { textView.toggleInlineCodeMarkdown(nil) }
-    @objc func codeBlockAction() { textView.applyCodeBlock() }
+    @objc func codeBlockAction() { insertFence("") }
+    @objc func insertPlainCodeBlock() { insertFence("") }
+    @objc func insertBashCodeBlock() { insertFence("bash") }
+    @objc func insertPythonCodeBlock() { insertFence("python") }
+    @objc func insertSwiftCodeBlock() { insertFence("swift") }
+    @objc func insertJSONCodeBlock() { insertFence("json") }
+
+    @objc func codeKindChanged(_ sender: NSPopUpButton) {
+        guard !isRefreshingToolbar else { return }
+        let title = sender.titleOfSelectedItem ?? ""
+        sender.selectItem(at: 0)
+        switch title {
+        case "Inline Code":
+            textView.toggleInlineCodeMarkdown(nil)
+        case "Text":
+            insertFence("")
+        case "Bash":
+            insertFence("bash")
+        case "Python":
+            insertFence("python")
+        case "Swift":
+            insertFence("swift")
+        case "JSON":
+            insertFence("json")
+        default:
+            break
+        }
+        refreshFormatToolbar()
+    }
+
+    private func insertFence(_ language: String) {
+        textView.applyCodeBlock(language: language)
+        canvas.relayout()
+        window?.makeFirstResponder(textView)
+        refreshFormatToolbar()
+    }
     @objc func tableAction(_ sender: Any? = nil) {
         showTableSizePicker(sender)
     }
@@ -902,7 +985,12 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSS
             return available.table
         case #selector(imageAction):
             return available.image
-        case #selector(codeBlockAction):
+        case #selector(codeBlockAction),
+             #selector(insertPlainCodeBlock),
+             #selector(insertBashCodeBlock),
+             #selector(insertPythonCodeBlock),
+             #selector(insertSwiftCodeBlock),
+             #selector(insertJSONCodeBlock):
             return available.codeBlock
         case #selector(ruleAction):
             return available.rule

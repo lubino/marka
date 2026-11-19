@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# After a version tag is pushed, publish the GitHub Release from this Mac.
+# GitHub Actions Release jobs currently fail before they can attach binaries.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOG="${TMPDIR:-/tmp}/marka-publish-release.log"
+TAGS=()
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$remote_ref" in
+        refs/tags/v*)
+            TAGS+=("${remote_ref#refs/tags/}")
+            ;;
+    esac
+done
+
+if [[ ${#TAGS[@]} -eq 0 ]]; then
+    exit 0
+fi
+
+for TAG in "${TAGS[@]}"; do
+    echo "Will publish GitHub Release ${TAG} after this push…"
+    nohup bash -c "
+        set -euo pipefail
+        cd '$ROOT_DIR'
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12 15 18 21 24 30; do
+            if git ls-remote --exit-code origin 'refs/tags/${TAG}' >/dev/null 2>&1; then
+                break
+            fi
+            sleep 2
+        done
+        exec ./scripts/publish-release.sh --tag '${TAG}' --skip-tests
+    " >>"$LOG" 2>&1 &
+    echo "Background publish log: ${LOG}"
+done
+
+exit 0

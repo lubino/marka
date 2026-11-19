@@ -61,9 +61,9 @@ open build/Marka.app
 - Headings, emphasis, lists, task lists, quotes, images
 - Word-style links: blue display text (including `[`file.md`](./file.md)`), URL card (Open / Copy / Remove). Local Markdown opens in Marka; other URLs open in the system app
 - GitHub-style fenced code and quotes: overlapping-squares copy chip hanging off the top-right corner. Shell fences also get a Terminal chip that runs the block in Terminal.app
-- Pages-style tables: size grid on insert, empty cells, translucent `+`/`−` chips on the table edges, Delete Table (last row/column removes the table). Tables continue across pages with a repeated header
+- Pages-style tables: size grid on insert, empty cells, A/B/C column letters and row numbers, green + to add and red − to delete (select a row or column first). Last row/column removes the table. Long tables split across pages with a repeated header. WYSIWYG never shows the raw `|` pipes.
 - Crash logs in `~/Library/Logs/Marka`; the next launch offers to show the latest report
-- Live format toolbar: Bold, headings, and other controls highlight from the caret and toggle off when already applied. Controls disable in fenced code, table overlay, and other places where that format cannot apply
+- Live format toolbar: Bold, headings, and other controls highlight from the caret and toggle off when already applied. The Code control is a popup (Inline / Text / Bash / Python / Swift / JSON) that inserts an empty fenced block with the caret inside, or toggles inline backticks. Controls disable in fenced code, a Pages table, and other places where that format cannot apply
 - Compact headings and paragraphs; GitHub-style underline under Heading 1 and 2 (the rule is not a typeable line)
 - Preview-style chrome: sidebar button before the document title; zoom is − / Auto / + magnifiers. Zoomed-out pages stay centered.
 - Manual page break: `<!-- pagebreak -->`

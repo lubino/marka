@@ -398,8 +398,16 @@ final class MarkdownTextView: NSTextView {
         applyEdit(MarkdownEditing.insertTable(source: string, selected: selectedRange(), rows: rows, columns: columns))
     }
 
-    func applyCodeBlock() {
-        applyEdit(MarkdownEditing.insertCodeBlock(source: string, selected: selectedRange()))
+    func applyCodeBlock(language: String = "") {
+        let selected = selectedRange()
+        let format = MarkdownEditing.format(at: selected, in: string)
+        if format.inCodeBlock {
+            if let retarget = MarkdownEditing.setCodeBlockLanguage(source: string, selected: selected, language: language) {
+                applyEdit(retarget)
+            }
+            return
+        }
+        applyEdit(MarkdownEditing.insertCodeBlock(source: string, selected: selected, language: language))
     }
 
     func applyQuote() {

@@ -212,6 +212,25 @@ public enum PageLayout {
         public var contentHeight: CGFloat
     }
 
+    /// One page of a flowed table: rows whose chrome stays inside that page's content rect.
+    public struct TablePageSlice: Equatable, Sendable {
+        public var page: Int
+        public var rows: [TableFlow.Row]
+        public var y: CGFloat
+        public var height: CGFloat
+
+        public var isContinuation: Bool {
+            rows.contains(where: \.isRepeatedHeader)
+        }
+
+        public init(page: Int, rows: [TableFlow.Row], y: CGFloat, height: CGFloat) {
+            self.page = page
+            self.rows = rows
+            self.y = y
+            self.height = height
+        }
+    }
+
     public static func flowTableRows(
         startY: CGFloat,
         storageRows: [Int],
@@ -254,6 +273,11 @@ public enum PageLayout {
             }
             if bottom(of: y) - y < rowHeight - 0.5 {
                 y = nextTop(of: y)
+                ensure(topPad + rowHeight)
+                if topPad > 0 {
+                    y += topPad
+                    content += topPad
+                }
                 place(header, repeated: true)
             }
             place(storage, repeated: false)
@@ -262,5 +286,45 @@ public enum PageLayout {
         y += bottomPad
         content += bottomPad
         return TableFlow(rows: rows, startY: startY, endY: y, contentHeight: content)
+    }
+
+    public static func tablePageSlices(
+        flow: TableFlow,
+        rowHeight: CGFloat,
+        topPad: CGFloat,
+        bottomPad: CGFloat
+    ) -> [TablePageSlice] {
+        var groups: [(Int, [TableFlow.Row])] = []
+        for row in flow.rows {
+            if let last = groups.last, last.0 == row.page {
+                groups[groups.count - 1].1.append(row)
+            } else {
+                groups.append((row.page, [row]))
+            }
+        }
+        return groups.enumerated().map { index, group in
+            let rows = group.1
+            let minY = (rows.first?.y ?? flow.startY) - topPad
+            var maxY = (rows.last?.y ?? minY) + rowHeight
+            if index == groups.count - 1 {
+                maxY += bottomPad
+            }
+            return TablePageSlice(
+                page: group.0,
+                rows: rows,
+                y: minY,
+                height: max(rowHeight, maxY - minY)
+            )
+        }
+    }
+
+    public static func columnLetter(_ index: Int) -> String {
+        var n = max(0, index)
+        var result = ""
+        repeat {
+            result = String(UnicodeScalar(65 + n % 26)!) + result
+            n = n / 26 - 1
+        } while n >= 0
+        return result
     }
 }

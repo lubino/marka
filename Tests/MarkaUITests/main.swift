@@ -198,25 +198,53 @@ enum MarkaUITests {
 
         harness.loadMarkdown("Grid")
         harness.insertTable(rows: 2, columns: 3)
-        expect(harness.tableChipIdleAlphaIsTranslucent, "table +/− chips are translucent")
-        expect(harness.tableChipsSitOnEdges, "table +/− chips sit on the grid edges")
-        expect(harness.tableAddColumnChipHitTestSucceeds, "add-column chip receives clicks")
+        expect(harness.tableCoversHiddenSource, "Pages table paints paper over the hidden GFM source")
+        expect(harness.pagesTableChromeIsNative, "column letters and row numbers sit in Pages-style header bars")
+        expect(harness.tableAddColumnChipHitTestSucceeds, "green add-column control receives clicks")
+        expect(harness.tableSliceCount == 1, "a short table is a single page slice, got \(harness.tableSliceCount)")
         expect(harness.relayoutStable, "table layout does not keep relayouting")
         expect(harness.tableHasFieldFocus, "insert table focuses a cell")
         let rows0 = harness.tableRowCount
         let cols0 = harness.tableColumnCount
         harness.clickAddTableRow()
-        expect(harness.tableRowCount == rows0 + 1, "add-row chip appends a data row, got \(harness.tableRowCount)")
+        expect(harness.tableRowCount == rows0 + 1, "green add-row appends a data row, got \(harness.tableRowCount)")
         expect(harness.tableHasFieldFocus, "caret stays in the table after add row")
         harness.clickAddTableColumn()
-        expect(harness.tableColumnCount == cols0 + 1, "add-column chip appends a column, got \(harness.tableColumnCount)")
+        expect(harness.tableColumnCount == cols0 + 1, "green add-column appends a column, got \(harness.tableColumnCount)")
         expect(harness.tableHasFieldFocus, "caret stays in the table after add column")
         harness.clickDeleteTableColumn()
-        expect(harness.tableColumnCount == cols0, "delete-column chip removes a column, got \(harness.tableColumnCount)")
+        expect(harness.tableColumnCount == cols0, "delete-column removes a column, got \(harness.tableColumnCount)")
         expect(harness.tableHasFieldFocus, "caret stays in the table after delete column")
         harness.clickDeleteTableRow()
-        expect(harness.tableRowCount == rows0, "delete-row chip removes a data row, got \(harness.tableRowCount)")
+        expect(harness.tableRowCount == rows0, "delete-row removes a data row, got \(harness.tableRowCount)")
         expect(harness.tableHasFieldFocus, "caret stays in the table after delete row")
+
+        harness.loadMarkdown("Tab")
+        harness.insertTable(rows: 2, columns: 2)
+        let tabRows = harness.tableRowCount
+        harness.focusTableCell(row: 2, column: 1)
+        harness.pressTableTab()
+        expect(harness.tableRowCount == tabRows + 1, "Tab in the last cell inserts a row, got \(harness.tableRowCount)")
+        expect(harness.tableHasFieldFocus, "caret stays in the table after Tab insert")
+
+        harness.loadMarkdown("Return")
+        harness.insertTable(rows: 2, columns: 2)
+        let returnRows = harness.tableRowCount
+        harness.focusTableCell(row: 2, column: 0)
+        harness.pressTableReturn()
+        expect(harness.tableRowCount == returnRows + 1, "Return on the last row inserts a row, got \(harness.tableRowCount)")
+
+        harness.loadMarkdown("Select")
+        harness.insertTable(rows: 3, columns: 3)
+        let selectCols = harness.tableColumnCount
+        harness.selectTableColumn(1)
+        harness.clickDeleteTableColumn()
+        expect(harness.tableColumnCount == selectCols - 1, "selecting a column then − deletes it, got \(harness.tableColumnCount)")
+        let selectRows = harness.tableRowCount
+        harness.selectTableRow(2)
+        harness.clickDeleteTableRow()
+        expect(harness.tableRowCount == selectRows - 1, "selecting a row then − deletes it, got \(harness.tableRowCount)")
+        expect(harness.tableOverlayCount == 1, "table remains when another data row is left")
 
         harness.loadMarkdown("""
         Keep
@@ -269,7 +297,8 @@ enum MarkaUITests {
         harness.loadMarkdown(codeSrc)
         harness.select((codeSrc as NSString).range(of: "code"))
         expect(harness.format.inlineCode, "inline code format at caret")
-        expect(harness.codeToolbarOn, "Code toolbar highlights on inline code")
+        expect(harness.codeToolbarOn, "inline code is active at the caret")
+        expect(harness.codePopupEnabled, "Code popup stays enabled so inline code can unwrap")
 
         harness.loadMarkdown("```python\nprint(1)\n```\n")
         expect(harness.firstChipShowsRun == false, "python fence has copy only")
@@ -287,11 +316,33 @@ enum MarkaUITests {
         harness.select(NSRange(location: 1, length: 0))
         expect(harness.boldToolbarEnabled, "Bold is enabled in a paragraph")
         expect(harness.headingPopupEnabled, "Heading is enabled in a paragraph")
+        expect(harness.codePopupEnabled, "Code popup is enabled in a paragraph")
+
+        harness.loadMarkdown("Start")
+        harness.select(NSRange(location: 5, length: 0))
+        harness.insertCodeBlock(language: "bash")
+        expect(harness.markdown.contains("```bash"), "bash popup inserts a fenced block, got \(harness.markdown)")
+        expect(harness.markdown.contains("`Start`") == false, "code popup does not wrap the line in inline backticks")
+        expect(harness.format.inCodeBlock, "caret is inside the empty bash fence")
+        expect(harness.format.codeBlockLanguage == "bash", "inserted fence is bash, got \(harness.format.codeBlockLanguage ?? "nil")")
+        let beforeType = harness.markdown
+        harness.typeAtCaret("echo hi")
+        expect(harness.markdown.contains("```bash\necho hi\n```"), "typing lands on the empty inner line, got \(harness.markdown)")
+        expect(beforeType.contains("echo hi") == false, "the inserted fence started empty")
+
+        harness.loadMarkdown("Note")
+        harness.select(NSRange(location: 4, length: 0))
+        harness.insertCodeBlock(language: "")
+        expect(harness.markdown.contains("```\n"), "Text inserts a plain fence")
+        expect(harness.format.inCodeBlock, "caret is inside the empty text fence")
 
         harness.loadMarkdown("Intro\n")
         harness.insertTable(rows: 28, columns: 2)
         expect(harness.pageCount >= 2, "tall table continues on the next page, got \(harness.pageCount)")
+        expect(harness.tableSliceCount >= 2, "tall table is split into one slice per page, got \(harness.tableSliceCount)")
+        expect(harness.tableRepeatsHeaderOnContinuations, "continuation slices repeat the header row")
         expect(harness.tablesStayOnPages, "table chrome does not paint the page gutter")
+        expect(harness.tableOverlayCount == 1, "one Pages table owns every page slice")
 
         harness.loadMarkdown("Wide\n")
         harness.insertTable(rows: 2, columns: 8)

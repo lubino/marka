@@ -77,6 +77,21 @@ enum Theme {
         codeBlockBorder(darkPaper: darkPaper)
     }
 
+    static func tableGutterFill(darkPaper: Bool) -> NSColor {
+        darkPaper ? NSColor(white: 0.16, alpha: 1) : NSColor(srgbRed: 0.945, green: 0.953, blue: 0.961, alpha: 1)
+    }
+
+    static func collapsedTableParagraph(spacingAfter: CGFloat = 0) -> NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.paragraphSpacing = spacingAfter
+        style.paragraphSpacingBefore = 0
+        style.lineHeightMultiple = 0.01
+        style.minimumLineHeight = 0.4
+        style.maximumLineHeight = 0.4
+        style.lineSpacing = 0
+        return style
+    }
+
     /// GitHub heading underline (`h1` / `h2` border-bottom).
     static func headingRule(darkPaper: Bool) -> NSColor {
         darkPaper
@@ -151,14 +166,15 @@ enum StyleEngine {
                 storage.addAttributes([
                     .font: NSFont.systemFont(ofSize: 0.01),
                     .foregroundColor: NSColor.clear,
-                    .kern: -1
+                    .kern: -20,
+                    .paragraphStyle: Theme.collapsedTableParagraph()
                 ], range: span.range)
                 if NSMaxRange(span.range) == NSMaxRange(span.group) {
                     let lastLine = ns.lineRange(for: NSRange(location: max(span.group.location, NSMaxRange(span.group) - 1), length: 0))
                     if lastLine.length > 0, NSMaxRange(lastLine) <= storage.length {
                         let extra = extraBlockSpacing[span.group.location] ?? 0
                         storage.addAttributes([
-                            .paragraphStyle: Theme.bodyParagraph(spacingAfter: extra)
+                            .paragraphStyle: Theme.collapsedTableParagraph(spacingAfter: extra)
                         ], range: lastLine)
                     }
                 }

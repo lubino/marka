@@ -50,15 +50,22 @@ final class MarkdownDocument: NSDocument {
 
     override func read(from data: Data, ofType typeName: String) throws {
         let decoded = FileCodec.decode(data)
-        codec = decoded.codec
-        loadedString = decoded.normalized
-        loadedData = data
-        pendingString = decoded.normalized
-        MainActor.assumeIsolated {
-            if let controller = windowControllers.first as? DocumentWindowController {
-                controller.setMarkdown(decoded.normalized)
-                pendingString = nil
+        let applyOnMain = {
+            MainActor.assumeIsolated {
+                self.codec = decoded.codec
+                self.loadedString = decoded.normalized
+                self.loadedData = data
+                self.pendingString = decoded.normalized
+                if let controller = self.windowControllers.first as? DocumentWindowController {
+                    controller.setMarkdown(decoded.normalized)
+                    self.pendingString = nil
+                }
             }
+        }
+        if Thread.isMainThread {
+            applyOnMain()
+        } else {
+            DispatchQueue.main.sync(execute: applyOnMain)
         }
     }
 

@@ -329,6 +329,16 @@ enum MarkaTests {
             expectEqual(blocks.first?.language, "sh", "shell language")
             expectEqual(blocks.first?.innerText, "echo hi", "inner copy text")
             expect(blocks.first!.innerText.isEmpty == false, "copy payload is non-empty")
+            let empty = MarkdownEditing.insertCodeBlock(source: "Hello", selected: NSRange(location: 5, length: 0), language: "bash")
+            expect(empty.text.contains("Hello\n```bash\n\n```"), "empty bash fence is its own block, got \(empty.text)")
+            expectEqual(empty.selected.length, 0, "empty fence has a caret, not a selection")
+            let atInner = empty.selected.location
+            expectEqual((empty.text as NSString).substring(with: NSRange(location: atInner, length: 4)), "\n```", "caret is on the blank inner line")
+            let wrapped = MarkdownEditing.insertCodeBlock(source: "use x here", selected: NSRange(location: 4, length: 1), language: "text")
+            expect(wrapped.text.contains("```text\nx\n```"), "selection becomes the fence body")
+            let retarget = MarkdownEditing.setCodeBlockLanguage(source: empty.text, selected: empty.selected, language: "python")
+            expect(retarget?.text.contains("```python") == true, "retarget keeps the fence and changes language")
+            expect(retarget?.text.contains("```bash") == false, "old language is gone")
         }
 
         // Live format + toggle unwrap
@@ -407,6 +417,32 @@ enum MarkaTests {
             )
             expect(huge.rows.count >= 1, "oversized rows still produce a flow")
             expect(huge.rows.count <= 8, "page walking is capped so layout cannot hang")
+            expectEqual(PageLayout.columnLetter(0), "A", "first column letter")
+            expectEqual(PageLayout.columnLetter(1), "B", "second column letter")
+            expectEqual(PageLayout.columnLetter(25), "Z", "26th column letter")
+            expectEqual(PageLayout.columnLetter(26), "AA", "column 27 wraps to AA")
+            expectEqual(PageLayout.columnLetter(27), "AB", "column 28 is AB")
+            let slices = PageLayout.tablePageSlices(
+                flow: flow,
+                rowHeight: 34,
+                topPad: 24,
+                bottomPad: 24
+            )
+            expect(slices.count >= 2, "each page gets its own table slice, got \(slices.count)")
+            expect(slices.first?.isContinuation == false, "the first slice is the original table")
+            expect(slices.dropFirst().allSatisfy(\.isContinuation), "later slices repeat the header")
+            expect(Set(slices.map(\.page)).count == slices.count, "slices map 1:1 onto pages")
+            if let repeated = flow.rows.first(where: \.isRepeatedHeader) {
+                let top = PageLayout.contentTop(pageIndex: repeated.page, geometry: g)
+                expect(
+                    repeated.y >= top + 24 - 0.5,
+                    "continuation pages leave topPad for column letters, y=\(repeated.y) top=\(top)"
+                )
+            } else {
+                expect(false, "flow should repeat the header after a page break")
+            }
+            let firstHeight = slices[0].height
+            expect(firstHeight >= 34 + 24, "a slice includes the column-letter bar")
         }
 
         do {
