@@ -510,12 +510,17 @@ public enum MarkdownEditing {
             if rest.trimmingCharacters(in: .whitespaces).isEmpty {
                 return .replaceLine("")
             }
-            if prefix.ordered, let n = prefix.number {
-                return .insert("\n\(n + 1). ")
-            }
-            return .insert("\n\(prefix.literal)")
+            return .insert("\n" + nextListMarker(prefix))
         }
         let quote = quotePrefix(currentLine)
+        // A list inside a quote continues inside the quote; an empty item ends the list there.
+        if !quote.isEmpty, let inner = listPrefix(String(currentLine.dropFirst(quote.count))) {
+            let rest = String(currentLine.dropFirst(quote.count))
+            if (rest as NSString).substring(from: inner.length).trimmingCharacters(in: .whitespaces).isEmpty {
+                return .replaceLine(quote)
+            }
+            return .insert("\n" + quote + nextListMarker(inner))
+        }
         if !quote.isEmpty {
             if trimmed == ">" || trimmed == "> " {
                 return .replaceLine("")
@@ -554,6 +559,13 @@ public enum MarkdownEditing {
     public enum ReturnAction: Equatable, Sendable {
         case insert(String)
         case replaceLine(String)
+    }
+
+    /// The marker for the next item: same indentation, number + 1, a task unticked.
+    static func nextListMarker(_ prefix: ListLinePrefix) -> String {
+        let indent = String(prefix.literal.prefix { $0 == " " || $0 == "\t" })
+        if prefix.ordered, let n = prefix.number { return indent + "\(n + 1). " }
+        return prefix.literal.replacingOccurrences(of: "[x]", with: "[ ]").replacingOccurrences(of: "[X]", with: "[ ]")
     }
 
     public static func listPrefix(_ line: String) -> ListLinePrefix? {

@@ -81,6 +81,7 @@ The saved file is ordinary UTF-8 GitHub-Flavored Markdown. Opening and saving wi
 
 - WYSIWYG Markdown: markers stay hidden while you write; source mode (`⌘/`) shows the raw Markdown.
 - Headings (GitHub-style rule under Heading 1 and 2), bold, italic, strikethrough, lists, task lists, quotes, images, horizontal rules, and manual page breaks (`<!-- pagebreak -->`).
+- Lists look like GitHub's: bullets by level, numbers, clickable checkboxes (done tasks dim), also inside quotes. The List pull-down (bulleted / numbered / task) and the Quote button work on every selected line; ↩ continues a list or quote, ⌫ at an item's start moves it out a level or back to text.
 - The format toolbar also works inside links and while editing a table cell.
 - **Text effects** (toolbar pull-down next to Strike, and the Format menu): underline, superscript, subscript and keyboard keys — written as GitHub-safe `<ins>`, `<sup>`, `<sub>`, `<kbd>`, shown formatted with the tags hidden. (Text colour and citations are not possible on GitHub, so Marka does not offer them.)
 - **GitHub alerts**: `> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]` show with GitHub's coloured bar, icon and title (Insert → Note … Caution). Every quote gets GitHub's left bar.

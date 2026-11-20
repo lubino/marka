@@ -229,8 +229,9 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
                 y += height(of: storage)
                 return row
             }
-            let height = y + Self.bottomPad
-            pageSlices = [PageLayout.TablePageSlice(page: 0, rows: rows, y: 0, height: height)]
+            // Not named `height`: Swift 6.1 (Xcode 16) lets a local shadow `height(of:)` above.
+            let sliceHeight = y + Self.bottomPad
+            pageSlices = [PageLayout.TablePageSlice(page: 0, rows: rows, y: 0, height: sliceHeight)]
         }
         while slices.count > pageSlices.count {
             slices.removeLast().removeFromSuperview()

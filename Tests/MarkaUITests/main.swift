@@ -1274,6 +1274,35 @@ enum MarkaUITests {
 
         if let dir = ProcessInfo.processInfo.environment["MARKA_EXPORT_ICONS_DIR"] { IconExport.write(to: dir) }
 
+        // Lists and quotes in the editor: caret never inside a hidden marker, Backspace, dimmed done tasks, toolbar.
+        do {
+            let h = EditorWindowHarness()
+            let doc = "Intro\n\n- [ ] open\n- [x] done\n    - nested\n\n> quoted\n"
+            h.loadMarkdown(doc)
+            let ns = doc as NSString
+            let open = ns.range(of: "- [ ] open").location
+            h.select(NSRange(location: open + 2, length: 0))
+            expect(h.caretLocation == open + 6, "a click inside a hidden marker lands on the item's text, got \(h.caretLocation)")
+            let nested = ns.range(of: "nested").location
+            h.select(NSRange(location: nested, length: 0))
+            h.pressBackspace()
+            expect(h.markdown.contains("\n- nested\n"), "Backspace at a nested item's start moves it out one level")
+            h.pressBackspace()
+            expect(h.markdown.contains("\nnested\n"), "Backspace again turns it into text")
+            let quoted = (h.markdown as NSString).range(of: "quoted").location
+            h.select(NSRange(location: quoted, length: 0))
+            h.pressBackspace()
+            expect(h.markdown.hasSuffix("\nquoted\n"), "Backspace at a quote line's start removes the quote")
+            let done = (h.markdown as NSString).range(of: "done").location
+            let openText = (h.markdown as NSString).range(of: "open").location
+            expect(h.foregroundHex(at: done) != h.foregroundHex(at: openText), "done tasks are dimmed")
+            let ids = h.toolbarIdentifiers
+            if let lists = ids.firstIndex(of: "lists") {
+                expect(lists + 1 < ids.count && ids[lists + 1] == "quote", "Quote button next to the list pull-down, got \(ids)")
+            } else { expect(false, "toolbar has lists, got \(ids)") }
+            h.close()
+        }
+
         // Help → Marka Tutorial, and its refresh keeps files made while trying it out.
         do {
             expect(InsertHarness.helpMenu().contains("Marka Tutorial"), "Help menu has Marka Tutorial, got \(InsertHarness.helpMenu())")
@@ -1302,7 +1331,7 @@ enum MarkaUITests {
             h.loadMarkdown(doc)
             let texts = h.listMarkers.map(\.text)
             // "3. Three" continues the list above it across the blank line (CommonMark / GitHub): 4., 5.
-            expect(texts == ["•", "◦", "◦", "▪", "•", "1.", "2.", "3.", "4.", "5.", "[x]", "[ ]", "•", "1.", "2."],
+            expect(texts == ["•", "◦", "◦", "▪", "•", "1.", "2.", "3.", "4.", "5.", "[x]", "[ ]", "•", "1.", "2.", "•"],
                    "bullets by level, GitHub numbering, checkboxes — got \(texts)")
             let ns = doc as NSString
             let x0 = h.textStartX(at: ns.range(of: "Groceries").location), x1 = h.textStartX(at: ns.range(of: "Apples").location)

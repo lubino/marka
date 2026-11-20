@@ -686,3 +686,11 @@ extension InsertHarness {
         AppDelegate.copyMerging(from: source, to: destination)
     }
 }
+
+extension EditorWindowHarness {
+    /// The Backspace key in the document.
+    public func pressBackspace() {
+        controller.testCanvas.textView.deleteBackward(nil)
+        pump(0.2)
+    }
+}

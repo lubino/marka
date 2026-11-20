@@ -251,7 +251,7 @@ The **Heading** menu in the toolbar (or <kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>1</kb
 
 ### Lists
 
-Press <kbd>↩</kbd> for the next item and <kbd>↩</kbd> on an empty item to end the list. <kbd>Tab</kbd> moves an item in, <kbd>⇧</kbd> <kbd>Tab</kbd> moves it back.
+Use the **List** button in the toolbar (bulleted, numbered or task list) — it works on every selected line at once. Press <kbd>↩</kbd> for the next item and <kbd>↩</kbd> on an empty item to end the list. <kbd>Tab</kbd> moves an item in, <kbd>⇧</kbd> <kbd>Tab</kbd> moves it back. <kbd>⌫</kbd> at the start of an item moves a nested item out one level, then turns it into normal text.
 
 - Groceries
     - Apples
@@ -265,7 +265,7 @@ Press <kbd>↩</kbd> for the next item and <kbd>↩</kbd> on an empty item to en
 
 ### Task lists
 
-Click a checkbox to tick a task off — click again to untick it. In the file it is `- [x]` or `- [ ]`:
+Click a checkbox to tick a task off — click again to untick it. Done tasks turn grey, so open ones stand out. <kbd>↩</kbd> after a ticked task starts a new, unticked one. In the file it is `- [x]` or `- [ ]`:
 
 - [x] Read the welcome
 - [x] Try a code block
@@ -279,7 +279,12 @@ Click a checkbox to tick a task off — click again to untick it. In the file it
 >
 > — often attributed to Leonardo da Vinci
 
-Every quote has a **Copy** icon, just like code blocks.
+Make one with the **Quote** button in the toolbar (it quotes every selected line; click again to unquote). <kbd>⌫</kbd> at the start of a quoted line removes the quote. Every quote has a **Copy** icon, just like code blocks.
+
+> Quotes can hold lists too:
+>
+> - [x] Lists inside quotes get bullets
+> - [ ] And checkboxes you can click
 
 ### A dividing line
 

@@ -568,11 +568,25 @@ final class MarkdownTextView: NSTextView {
     }
 
     override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting stillSelectingFlag: Bool) {
-        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelectingFlag)
+        super.setSelectedRanges(snappedOutOfHiddenPrefixes(ranges), affinity: affinity, stillSelecting: stillSelectingFlag)
         if !stillSelectingFlag {
             revealInlineMathIfNeeded()
             markdownDelegate?.markdownTextViewDidChangeSelection(self)
         }
+    }
+
+    /// The caret never stops inside a hidden list / quote marker (typing there would break the
+    /// list): it goes to the item's text — or, moving left from the text, to the previous line.
+    private func snappedOutOfHiddenPrefixes(_ ranges: [NSValue]) -> [NSValue] {
+        guard mode == .wysiwyg, !isApplyingStyles, ranges.count == 1, ranges[0].rangeValue.length == 0 else { return ranges }
+        let caret = ranges[0].rangeValue.location
+        let previous = selectedRange().location
+        for prefix in MarkdownSyntax.hiddenLinePrefixes(in: string) where prefix.length > 0 {
+            guard caret >= prefix.location, caret < NSMaxRange(prefix) else { continue }
+            let leftFromText = previous == NSMaxRange(prefix) && caret < previous && prefix.location > 0
+            return [NSValue(range: NSRange(location: leftFromText ? prefix.location - 1 : NSMaxRange(prefix), length: 0))]
+        }
+        return ranges
     }
 
     /// Inline `$…$` the caret is in (its source is shown while editing it).
@@ -741,8 +755,9 @@ final class MarkdownTextView: NSTextView {
         applyEdit(MarkdownEditing.setHeading(source: string, selected: selectedRange(), level: level))
     }
 
+    /// Bullets / numbers / tasks for every selected line (or removes them when all already are).
     func applyList(ordered: Bool, task: Bool) {
-        applyEdit(MarkdownEditing.toggleList(source: string, selected: selectedRange(), ordered: ordered, task: task))
+        applyEdit(MarkdownEditing.setList(source: string, selected: selectedRange(), kind: task ? .task : (ordered ? .ordered : .bullet)))
     }
 
     func applyLink() {
@@ -778,12 +793,21 @@ final class MarkdownTextView: NSTextView {
         applyEdit(MarkdownEditing.insertCodeBlock(source: string, selected: selected, language: language))
     }
 
+    /// Quotes every selected line, or unquotes them when all are quoted.
     func applyQuote() {
-        transformCurrentLine { line in
-            if line.hasPrefix("> ") { return String(line.dropFirst(2)) }
-            if line.hasPrefix(">") { return String(line.dropFirst()) }
-            return "> " + line
+        applyEdit(MarkdownEditing.toggleQuote(source: string, selected: selectedRange()))
+    }
+
+    /// Backspace right after a hidden list / quote marker undoes one step of structure (outdent,
+    /// list item → text, one quote level) instead of deleting invisible characters.
+    override func deleteBackward(_ sender: Any?) {
+        let selection = selectedRange()
+        if mode == .wysiwyg, selection.length == 0,
+           let result = MarkdownEditing.backspaceStructure(source: string, caret: selection.location) {
+            applyEdit(result)
+            return
         }
+        super.deleteBackward(sender)
     }
 
     func applyRule() {

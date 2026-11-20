@@ -426,7 +426,8 @@ enum StyleEngine {
             for item in MarkdownSyntax.listItems(in: storage.string, spans: spans)
                 where item.marker.length > 0 && NSMaxRange(item.line) <= storage.length {
                 let width = Theme.listMarkerWidth(item.kind, fontSize: settings.fontSize)
-                let indent = Theme.listIndent(level: item.level, fontSize: settings.fontSize)
+                // Inside a quote the list starts at the quote's text indent.
+                let indent = Theme.listIndent(level: item.level, fontSize: settings.fontSize) + (item.quoteDepth > 0 ? 18 : 0)
                 let style = Theme.bodyParagraph(indent: 0, spacingAfter: 2).mutableCopy() as! NSMutableParagraphStyle
                 style.firstLineHeadIndent = indent
                 style.headIndent = indent + width
@@ -438,6 +439,11 @@ enum StyleEngine {
                     .markaListMarker: ListMarkerBox(kind: item.kind, level: item.level, width: width)
                 ], range: item.marker)
                 storage.addAttribute(.kern, value: width, range: NSRange(location: NSMaxRange(item.marker) - 1, length: 1))
+                // Done tasks recede (dimmed), so the open ones stand out.
+                if case .task(checked: true) = item.kind, NSMaxRange(item.line) > NSMaxRange(item.marker) {
+                    storage.addAttribute(.foregroundColor, value: Theme.paperSecondaryText(darkPaper: settings.darkPaper),
+                                         range: NSRange(location: NSMaxRange(item.marker), length: NSMaxRange(item.line) - NSMaxRange(item.marker)))
+                }
             }
             // Inline math `$…$`: hidden source with the formula's width reserved (kern on the closing
             // `$`); `MarkdownTextView` draws the formula. With the caret inside, the source shows.

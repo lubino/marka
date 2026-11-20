@@ -48,6 +48,19 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     private var headingPopup: NSPopUpButton?
     private var codePopup: NSPopUpButton?
     private var effectsPopup: NSPopUpButton?
+    private var listPopup: NSPopUpButton?
+
+    @objc func listKindChanged(_ sender: NSPopUpButton) {
+        guard !isRefreshingToolbar else { return }
+        let index = sender.indexOfSelectedItem
+        sender.selectItem(at: 0)
+        switch index {
+        case 1: listAction()
+        case 2: orderedListAction()
+        case 3: taskListAction()
+        default: break
+        }
+    }
     private var formatButtons: [NSToolbarItem.Identifier: NSButton] = [:]
     private var actionItems: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
     private var settingsController: SettingsWindowController?
@@ -494,7 +507,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
             .sidebar, .sidebarTrackingSeparator,
-            .heading, .bold, .italic, .strike, .effects, .lists, .link, .code, .table, .image,
+            .heading, .bold, .italic, .strike, .effects, .lists, .quote, .link, .code, .table, .image,
             .flexibleSpace, .pageInfo, .overview, .undo, .redo, .find, .share, .publish, .print, .zoom, .exportPDF
         ]
     }
@@ -575,7 +588,32 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
             popup.frame.size = NSSize(width: max(44, popup.frame.width), height: 24)
             return item
         case .lists:
-            return toggleItem(itemIdentifier, title: "List", symbol: "list.bullet", action: #selector(listAction))
+            // One pull-down for the three list kinds; its icon shows the kind at the caret.
+            let popup = NSPopUpButton()
+            popup.pullsDown = true
+            popup.bezelStyle = .texturedRounded
+            popup.imagePosition = .imageOnly
+            popup.refusesFirstResponder = true
+            popup.target = self
+            popup.action = #selector(listKindChanged(_:))
+            popup.toolTip = "Lists"
+            popup.addItem(withTitle: "")
+            popup.item(at: 0)?.image = Self.symbol("list.bullet", fallback: "list.bullet")
+            for (title, symbol) in [("Bulleted List", "list.bullet"), ("Numbered List", "list.number"), ("Task List", "checklist")] {
+                popup.addItem(withTitle: title)
+                popup.lastItem?.image = Self.symbol(symbol, fallback: "list.bullet")
+            }
+            listPopup = popup
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.view = popup
+            item.label = "List"
+            item.paletteLabel = "Lists"
+            item.toolTip = "Bulleted, numbered or task list"
+            popup.sizeToFit()
+            popup.frame.size = NSSize(width: max(44, popup.frame.width), height: 24)
+            return item
+        case .quote:
+            return toggleItem(itemIdentifier, title: "Quote", symbol: "text.quote", action: #selector(quoteAction))
         case .link:
             return toggleItem(itemIdentifier, title: "Link", symbol: "link", action: #selector(linkAction))
         case .code:
@@ -844,12 +882,20 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         formatButtons[.bold]?.state = format.bold ? .on : .off
         formatButtons[.italic]?.state = format.italic ? .on : .off
         formatButtons[.strike]?.state = format.strike ? .on : .off
-        formatButtons[.lists]?.state = (format.unorderedList || format.orderedList || format.taskList) ? .on : .off
+        formatButtons[.quote]?.state = format.quote ? .on : .off
+        formatButtons[.quote]?.isEnabled = available.quote
+        if let popup = listPopup {
+            let kinds = [format.unorderedList, format.orderedList, format.taskList]
+            for (index, on) in kinds.enumerated() { popup.item(at: index + 1)?.state = on ? .on : .off }
+            let symbol = format.taskList ? "checklist" : format.orderedList ? "list.number" : "list.bullet"
+            popup.item(at: 0)?.image = Self.symbol(symbol, fallback: "list.bullet")
+            popup.contentTintColor = kinds.contains(true) ? .controlAccentColor : nil
+            popup.isEnabled = available.lists
+        }
         formatButtons[.link]?.state = format.link ? .on : .off
         formatButtons[.bold]?.isEnabled = available.inline
         formatButtons[.italic]?.isEnabled = available.inline
         formatButtons[.strike]?.isEnabled = available.inline
-        formatButtons[.lists]?.isEnabled = available.lists
         formatButtons[.link]?.isEnabled = available.link
         codePopup?.isEnabled = available.inlineCode || available.codeBlock
         // Effects: checkmarks on the active ones; the pull-down's button is highlighted when any is.
@@ -1125,7 +1171,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     var testBoldToolbarOn: Bool { formatButtons[.bold]?.state == .on }
     var testItalicToolbarOn: Bool { formatButtons[.italic]?.state == .on }
     var testStrikeToolbarOn: Bool { formatButtons[.strike]?.state == .on }
-    var testListToolbarOn: Bool { formatButtons[.lists]?.state == .on }
+    var testListToolbarOn: Bool { listPopup?.contentTintColor == .controlAccentColor }
     var testLinkToolbarOn: Bool { formatButtons[.link]?.state == .on }
     var testCodeToolbarOn: Bool { currentFormat().inlineCode }
     var testCodePopupEnabled: Bool { codePopup?.isEnabled ?? false }
@@ -2495,6 +2541,7 @@ extension NSToolbarItem.Identifier {
     static let italic = NSToolbarItem.Identifier("italic")
     static let strike = NSToolbarItem.Identifier("strike")
     static let lists = NSToolbarItem.Identifier("lists")
+    static let quote = NSToolbarItem.Identifier("quote")
     static let link = NSToolbarItem.Identifier("link")
     static let code = NSToolbarItem.Identifier("code")
     static let table = NSToolbarItem.Identifier("table")

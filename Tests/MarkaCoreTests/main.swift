@@ -868,6 +868,51 @@ enum MarkaTests {
             } else { expect(false, "setImageOptions in a cell") }
         }
 
+        // Lists, task lists and quotes: editing like a word processor.
+        do {
+            // Several lines at once; numbers count up; indentation and quotes are kept.
+            let doc = "alpha\n    beta\ngamma\n"
+            let numbered = MarkdownEditing.setList(source: doc, selected: NSRange(location: 0, length: (doc as NSString).length), kind: .ordered)
+            expectEqual(numbered.text, "1. alpha\n    1. beta\n2. gamma\n", "numbered list over a selection (per level)")
+            let tasks = MarkdownEditing.setList(source: numbered.text, selected: NSRange(location: 0, length: (numbered.text as NSString).length), kind: .task)
+            expectEqual(tasks.text, "- [ ] alpha\n    - [ ] beta\n- [ ] gamma\n", "switching the kind replaces the markers")
+            let off = MarkdownEditing.setList(source: tasks.text, selected: NSRange(location: 0, length: (tasks.text as NSString).length), kind: .task)
+            expectEqual(off.text, "alpha\n    beta\ngamma\n", "same kind again removes the list")
+            let caret = MarkdownEditing.setList(source: "hello world\n", selected: NSRange(location: 6, length: 0), kind: .bullet)
+            expect(caret.text == "- hello world\n" && caret.selected.location == 8, "single line: caret stays on the same letter, got \(caret.selected)")
+            let ticked = MarkdownEditing.setList(source: "- [x] done\n", selected: NSRange(location: 3, length: 0), kind: .bullet)
+            expectEqual(ticked.text, "- done\n", "task → bullet")
+            // Quotes over a selection, and back.
+            let quoted = MarkdownEditing.toggleQuote(source: "one\n\ntwo\n", selected: NSRange(location: 0, length: 8))
+            expectEqual(quoted.text, "> one\n>\n> two\n", "quote every selected line (empty ones too)")
+            expectEqual(MarkdownEditing.toggleQuote(source: quoted.text, selected: NSRange(location: 0, length: (quoted.text as NSString).length)).text, "one\n\ntwo\n", "unquote")
+            // Return.
+            if case .insert(let next) = MarkdownEditing.handleReturn(currentLine: "- [x] done") {
+                expectEqual(next, "\n- [ ] ", "Return after a ticked task starts an unticked one")
+            } else { expect(false, "task return") }
+            if case .insert(let next) = MarkdownEditing.handleReturn(currentLine: "    3. third") {
+                expectEqual(next, "\n    4. ", "numbered Return keeps the nesting")
+            } else { expect(false, "ordered return") }
+            if case .insert(let next) = MarkdownEditing.handleReturn(currentLine: "> - in a quote") {
+                expectEqual(next, "\n> - ", "a list in a quote continues in the quote")
+            } else { expect(false, "quote list return") }
+            if case .replaceLine(let line) = MarkdownEditing.handleReturn(currentLine: "> - ") {
+                expectEqual(line, "> ", "empty item in a quote ends the list, stays in the quote")
+            } else { expect(false, "quote list end") }
+            // Backspace at the start of an item's text.
+            expectEqual(MarkdownEditing.backspaceStructure(source: "    - nested\n", caret: 6)?.text, "- nested\n", "Backspace outdents a nested item")
+            expectEqual(MarkdownEditing.backspaceStructure(source: "- [ ] task\n", caret: 6)?.text, "task\n", "Backspace turns an item into text")
+            expectEqual(MarkdownEditing.backspaceStructure(source: "> quote\n", caret: 2)?.text, "quote\n", "Backspace removes the quote")
+            expectEqual(MarkdownEditing.backspaceStructure(source: "> - a\n", caret: 4)?.text, "> a\n", "list in a quote: the list goes first")
+            expect(MarkdownEditing.backspaceStructure(source: "- text\n", caret: 4) == nil, "inside the text: ordinary Backspace")
+            // Lists inside quotes and hidden prefixes.
+            let q = "> - one\n> - [x] two\n> plain\n"
+            let items = MarkdownSyntax.listItems(in: q)
+            expect(items.count == 2 && items.allSatisfy { $0.quoteDepth == 1 }, "lists inside quotes are found, got \(items)")
+            expectEqual(items.last?.kind, .task(checked: true), "task inside a quote")
+            expectEqual(MarkdownSyntax.hiddenLinePrefixes(in: q).map(\.length), [4, 8, 2], "hidden prefixes: quote + list markers, quote marker")
+        }
+
         // Statistics count GitHub <img> tags as images too.
         expectEqual(DocumentStats.compute("![a](a.png)\n<img src=\"b.png\" width=\"40%\">\n<p align=\"center\"><IMG src='c.png'></p>\n").images, 3,
                     "images: Markdown and <img>")
