@@ -230,6 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let helpItem = NSMenuItem()
         let help = NSMenu(title: "Help")
         help.addItem(withTitle: "Marka Help", action: #selector(openHelp), keyEquivalent: "?")
+        help.addItem(withTitle: "Marka Tutorial", action: #selector(openTutorial), keyEquivalent: "")
         help.addItem(withTitle: "Keyboard Shortcuts", action: #selector(openShortcuts), keyEquivalent: "")
         helpItem.submenu = help
         main.addItem(helpItem)
@@ -250,6 +251,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.identifier = Self.shareItemID
         menu.removeItem(at: index)
         menu.insertItem(item, at: index)
+    }
+
+    /// Copies `source`'s files into `destination`, replacing same-named files, keeping others.
+    static func copyMerging(from source: URL, to destination: URL) {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        // Relative paths straight from the enumerator (/var vs /private/var would break prefixes).
+        guard let enumerator = fm.enumerator(atPath: source.path) else { return }
+        for case let relative as String in enumerator {
+            let file = source.appendingPathComponent(relative)
+            let target = destination.appendingPathComponent(relative)
+            var isDirectory: ObjCBool = false
+            if fm.fileExists(atPath: file.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                try? fm.createDirectory(at: target, withIntermediateDirectories: true)
+            } else {
+                try? fm.removeItem(at: target)
+                try? fm.copyItem(at: file, to: target)
+            }
+        }
     }
 
     static let projectURL = URL(string: "https://github.com/lubino/marka")!
@@ -276,12 +296,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openHelp() { openBundledGuide("Help") }
     @objc private func openShortcuts() { openBundledGuide("Shortcuts") }
 
+    /// Help → Marka Tutorial: the hands-on tour (documents/Marka.md and its pictures). It invites
+    /// editing, so the copy is writable and kept in ~/Library/Application Support/Marka/Tutorial;
+    /// a newer bundled version replaces it only while the user has not changed it.
+    @objc func openTutorial() {
+        guard let source = Bundle.main.url(forResource: "Tutorial", withExtension: nil) else {
+            if let url = URL(string: "https://github.com/lubino/marka/blob/main/documents/Marka.md") { NSWorkspace.shared.open(url) }
+            return
+        }
+        let fm = FileManager.default
+        let folder = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Marka/Tutorial", isDirectory: true)
+        let tutorial = folder.appendingPathComponent("Marka.md")
+        let pristine = folder.appendingPathComponent(".bundled-Marka.md")
+        let bundled = source.appendingPathComponent("Marka.md")
+        let untouched = !fm.fileExists(atPath: tutorial.path)
+            || (fm.contentsEqual(atPath: tutorial.path, andPath: pristine.path))
+        if untouched {
+            // Only the tutorial's own files are replaced: files made while trying it out
+            // (autoload-demo.md, dropped pictures…) stay.
+            Self.copyMerging(from: source, to: folder)
+            try? fm.removeItem(at: pristine)
+            try? fm.copyItem(at: bundled, to: pristine)
+        }
+        NSDocumentController.shared.openDocument(withContentsOf: tutorial, display: true) { _, _, error in
+            if let error { NSApp.presentError(error) }
+        }
+    }
+
     /// Opens Help.md / Shortcuts.md from the app bundle as a Marka tab. A fresh read-only copy in
     /// ~/Library/Application Support/Marka/Help keeps the bundle untouched (and up to date after
     /// updates); without the bundled file (swift run), the GitHub page opens instead.
     private func openBundledGuide(_ name: String) {
         guard let source = Bundle.main.url(forResource: name, withExtension: "md") else {
-            if let url = URL(string: "https://github.com/lubino/marka/blob/main/\(name).md") { NSWorkspace.shared.open(url) }
+            if let url = URL(string: "https://github.com/lubino/marka/blob/main/documents/\(name).md") { NSWorkspace.shared.open(url) }
             return
         }
         let fm = FileManager.default

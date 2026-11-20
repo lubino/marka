@@ -593,3 +593,96 @@ extension InsertHarness {
         return (credits.string, link)
     }
 }
+
+extension EditorWindowHarness {
+    /// Drawn list markers: kind ("•", "◦", "▪", "3.", "[x]", "[ ]") and their rects (text view).
+    public var listMarkers: [(text: String, rect: CGRect)] {
+        controller.testCanvas.textView.listMarkerPlacements().map { placement in
+            let text: String
+            switch placement.box.kind {
+            case .bullet: text = ["•", "◦", "▪"][placement.box.level % 3]
+            case .ordered(let n): text = "\(n)."
+            case .task(let checked): text = checked ? "[x]" : "[ ]"
+            }
+            return (text, placement.rect)
+        }
+    }
+
+    /// Clicks the centre of drawn marker `index` (as a mouse click on a checkbox would).
+    public func clickListMarker(_ index: Int) {
+        let markers = controller.testCanvas.textView.listMarkerPlacements()
+        guard index < markers.count else { return }
+        _ = controller.testCanvas.textView.toggleTaskIfCheckbox(at: CGPoint(x: markers[index].rect.midX, y: markers[index].rect.midY))
+        pump(0.2)
+    }
+
+    /// x where the text of the line containing `location` starts (text view coordinates).
+    public func textStartX(at location: Int) -> CGFloat {
+        controller.testCanvas.textView.firstRect(forCharacterRange: NSRange(location: location, length: 1), actualRange: nil).minX
+            - (controller.window?.frame.minX ?? 0)
+    }
+}
+
+@MainActor
+public enum IconExport {
+    /// The app's real icons (same SF Symbols, plus the drawn unlink icon) as grey PNGs for the
+    /// tutorial: 64 px, used at 18 pt.
+    public static func write(to directory: String) {
+        let icons: [(String, NSImage?)] = [
+            ("copy", NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)),
+            ("terminal", NSImage(systemSymbolName: "apple.terminal", accessibilityDescription: nil)),
+            ("content", NSImage(systemSymbolName: "list.bullet.rectangle", accessibilityDescription: nil)),
+            ("folder", NSImage(systemSymbolName: "folder", accessibilityDescription: nil)),
+            ("open", NSImage(systemSymbolName: "arrow.up.right.square", accessibilityDescription: nil)),
+            ("unlink", LinkCardView.unlinkImage()),
+            ("options", NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)),
+            ("trash", NSImage(systemSymbolName: "trash", accessibilityDescription: nil)),
+            ("publish", NSImage(systemSymbolName: "paperplane", accessibilityDescription: nil)),
+            ("code", NSImage(systemSymbolName: "curlybraces.square", accessibilityDescription: nil)),
+            ("effects", NSImage(systemSymbolName: "textformat", accessibilityDescription: nil)),
+            ("table", NSImage(systemSymbolName: "tablecells", accessibilityDescription: nil)),
+            ("image", NSImage(systemSymbolName: "photo", accessibilityDescription: nil)),
+            ("find", NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)),
+            ("share", NSImage(systemSymbolName: "square.and.arrow.up", accessibilityDescription: nil)),
+            ("print", NSImage(systemSymbolName: "printer", accessibilityDescription: nil)),
+            ("pdf", NSImage(systemSymbolName: "arrow.down.document", accessibilityDescription: nil)
+                ?? NSImage(systemSymbolName: "square.and.arrow.down", accessibilityDescription: nil)),
+            ("thumbnails", NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: nil))
+        ]
+        try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        let pixels = 64
+        for (name, symbol) in icons {
+            guard let base = symbol else { continue }
+            // The unlink icon is drawn (not an SF Symbol); the others get a large symbol size.
+            let image = name == "unlink" ? base : (base.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 40, weight: .regular)) ?? base)
+            guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels, bitsPerSample: 8,
+                                             samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                             bytesPerRow: 0, bitsPerPixel: 0),
+                  let context = NSGraphicsContext(bitmapImageRep: rep) else { continue }
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = context
+            let size = image.size
+            let scale = min(52 / max(size.width, 1), 52 / max(size.height, 1))
+            let w = size.width * scale, h = size.height * scale
+            let rect = NSRect(x: (CGFloat(pixels) - w) / 2, y: (CGFloat(pixels) - h) / 2, width: w, height: h)
+            image.draw(in: rect)
+            NSColor(srgbRed: 0.36, green: 0.40, blue: 0.46, alpha: 1).set()
+            NSRect(x: 0, y: 0, width: pixels, height: pixels).fill(using: .sourceAtop)
+            NSGraphicsContext.restoreGraphicsState()
+            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(name).png"))
+        }
+    }
+}
+
+extension InsertHarness {
+    public static func helpMenu() -> [String] {
+        let delegate = AppDelegate()
+        let main = delegate.makeMainMenu()
+        defer { withExtendedLifetime(delegate) {} }
+        return main.items.first { $0.submenu?.title == "Help" }?.submenu?.items.map(\.title) ?? []
+    }
+
+    public static func copyMerging(from source: URL, to destination: URL) {
+        AppDelegate.copyMerging(from: source, to: destination)
+    }
+}

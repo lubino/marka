@@ -87,6 +87,22 @@ enum Theme {
         darkPaper ? NSColor(srgbRed: 0.62, green: 0.65, blue: 0.69, alpha: 1) : NSColor(srgbRed: 0.40, green: 0.44, blue: 0.49, alpha: 1)
     }
 
+    /// Where a list item's marker starts: a small inset, then one step per nesting level.
+    static func listIndent(level: Int, fontSize: CGFloat) -> CGFloat {
+        fontSize * 0.6 + CGFloat(level) * fontSize * 1.9
+    }
+
+    /// Room for the bullet / number / checkbox before the item's text.
+    static func listMarkerWidth(_ kind: ListItem.Kind, fontSize: CGFloat) -> CGFloat {
+        switch kind {
+        case .bullet: return fontSize * 1.5
+        case .task: return fontSize * 1.9
+        case .ordered(let number):
+            let text = "\(number)." as NSString
+            return max(fontSize * 1.5, ceil(text.size(withAttributes: [.font: NSFont.systemFont(ofSize: fontSize)]).width) + fontSize * 0.6)
+        }
+    }
+
     /// The monospaced label font, created once.
     @MainActor static let codeLabelFont: NSFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
 
@@ -210,6 +226,8 @@ extension NSAttributedString.Key {
     static let markaInlineMath = NSAttributedString.Key("MarkaInlineMath")
     /// An emoji drawn over its hidden `:shortcode:` (Settings → emoji shortcodes).
     static let markaEmoji = NSAttributedString.Key("MarkaEmoji")
+    /// A list bullet / number / checkbox drawn over its hidden Markdown marker (`ListMarkerBox`).
+    static let markaListMarker = NSAttributedString.Key("MarkaListMarker")
 }
 
 enum StyleEngine {
@@ -401,6 +419,25 @@ enum StyleEngine {
                     .foregroundColor: NSColor.clear,
                     .kern: -1
                 ], range: span.range)
+            }
+            // Lists (GitHub look): `- ` / `1. ` / `- [ ] ` and their indentation are hidden; each
+            // item is indented by its level with a hanging indent, and MarkdownTextView draws the
+            // bullet (• ◦ ▪ by level), the number or the checkbox in the reserved space.
+            for item in MarkdownSyntax.listItems(in: storage.string, spans: spans)
+                where item.marker.length > 0 && NSMaxRange(item.line) <= storage.length {
+                let width = Theme.listMarkerWidth(item.kind, fontSize: settings.fontSize)
+                let indent = Theme.listIndent(level: item.level, fontSize: settings.fontSize)
+                let style = Theme.bodyParagraph(indent: 0, spacingAfter: 2).mutableCopy() as! NSMutableParagraphStyle
+                style.firstLineHeadIndent = indent
+                style.headIndent = indent + width
+                storage.addAttribute(.paragraphStyle, value: style, range: ns.lineRange(for: item.line))
+                storage.addAttributes([
+                    .font: NSFont.systemFont(ofSize: 0.01),
+                    .foregroundColor: NSColor.clear,
+                    .kern: 0,
+                    .markaListMarker: ListMarkerBox(kind: item.kind, level: item.level, width: width)
+                ], range: item.marker)
+                storage.addAttribute(.kern, value: width, range: NSRange(location: NSMaxRange(item.marker) - 1, length: 1))
             }
             // Inline math `$…$`: hidden source with the formula's width reserved (kern on the closing
             // `$`); `MarkdownTextView` draws the formula. With the caret inside, the source shows.
@@ -630,5 +667,17 @@ enum StyleEngine {
 extension NSFont {
     func withSize(_ size: CGFloat) -> NSFont {
         NSFont(descriptor: fontDescriptor, size: size) ?? self
+    }
+}
+
+/// What `MarkdownTextView` draws for one list marker.
+final class ListMarkerBox: NSObject {
+    let kind: ListItem.Kind
+    let level: Int
+    let width: CGFloat
+    init(kind: ListItem.Kind, level: Int, width: CGFloat) {
+        self.kind = kind
+        self.level = level
+        self.width = width
     }
 }

@@ -23,6 +23,11 @@ trap 'rm -rf "$STAGE_DIR"' EXIT
 
 ditto "$APP_BUNDLE" "$STAGE_DIR/Marka.app"
 ln -s /Applications "$STAGE_DIR/Applications"
+# The hands-on tutorial next to the app: open Marka.md in Marka to learn it in a few minutes.
+mkdir -p "$STAGE_DIR/Marka Tutorial"
+cp "$ROOT_DIR/documents/Marka.md" "$STAGE_DIR/Marka Tutorial/"
+ditto --norsrc --noextattr --noqtn "$ROOT_DIR/documents/assets" "$STAGE_DIR/Marka Tutorial/assets"
+find "$STAGE_DIR/Marka Tutorial" -name .DS_Store -delete
 
 hdiutil create \
     -volname "Marka" \

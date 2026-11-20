@@ -49,6 +49,10 @@ final class PagedEditorView: NSView {
             return self.codeHeaders.contains { $0.containsIcon(atWindowPoint: point) }
                 || self.pagesTables.contains { $0.editChromeContains(windowPoint: point) }
                 || self.linkCard.buttonContains(windowPoint: point)
+                || self.textView.listMarkerPlacements().contains { placement in
+                    if case .task = placement.box.kind { return placement.rect.contains(self.textView.convert(point, from: nil)) }
+                    return false
+                }
                 || self.imageCard.buttonContains(windowPoint: point)
                 || (self.imageViews as [NSView] + self.renderedViews as [NSView]).contains { view in
                     !view.isHidden && view.frame.contains(self.convert(point, from: nil))

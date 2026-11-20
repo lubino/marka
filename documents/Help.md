@@ -152,9 +152,11 @@ Marka can also make a PDF without opening a window — handy for scripts:
 /Applications/Marka.app/Contents/MacOS/Marka -pdf notes.md notes.pdf
 ```
 
-It prints how many pages, words, headings, images and so on the document has. All the details — a short `marka` command, exit codes, exporting a whole folder — are in **cli.md** (on GitHub: https://github.com/lubino/marka/blob/main/cli.md).
+It prints how many pages, words, headings, images and so on the document has. All the details — a short `marka` command, exit codes, exporting a whole folder — are in **cli.md** (on GitHub: https://github.com/lubino/marka/blob/main/documents/cli.md).
 
 ## More
+
+- The hands-on tutorial: **Help → Marka Tutorial** (also the *Marka Tutorial* folder in the download).
 
 - All keyboard shortcuts: **Help → Keyboard Shortcuts**.
 - Marka is free and open source: https://github.com/lubino/marka

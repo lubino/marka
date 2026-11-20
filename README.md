@@ -6,6 +6,9 @@ Native Swift and AppKit: no Electron, no web view, a ~5 MB download.
 
 [**⬇ Download Marka for macOS**](https://github.com/lubino/marka/releases/latest) · macOS 14 Sonoma or newer · Apple Silicon and Intel · MIT license
 
+> [!TIP]
+> **New to Marka? Start with the tutorial.** [**Marka.md**](documents/Marka.md) is a hands-on tour of every feature — code blocks you can run, tables, pictures, math, diagrams, emoji, Git — and you learn Marka in a few minutes by trying things out in it. Open it **in Marka**: it is in the **Marka Tutorial** folder of the downloaded disk image, and in the app under **Help → Marka Tutorial**.
+
 ![Marka editing a Markdown document on A4 pages](assets/preview.png)
 
 ## Why Marka
@@ -160,7 +163,7 @@ Reading time    4 min
 …
 ```
 
-Full guide: [cli.md](cli.md). The output name is optional (default: the input with `.pdf`). Exit code 0 = exported, 1 = error, 2 = wrong arguments. For a shorter command: `alias marka=/Applications/Marka.app/Contents/MacOS/Marka`.
+Full guide: [documents/cli.md](documents/cli.md). The output name is optional (default: the input with `.pdf`). Exit code 0 = exported, 1 = error, 2 = wrong arguments. For a shorter command: `alias marka=/Applications/Marka.app/Contents/MacOS/Marka`.
 
 ## Shortcuts
 
@@ -181,7 +184,18 @@ Full guide: [cli.md](cli.md). The output name is optional (default: the input wi
 | Settings                      | `⌘,`                                      |
 | Table rows and columns        | Format → Table, or the grips in a table   |
 
-New to Marka? Read the [Help](Help.md) (also Help → Marka Help in the app) and the full list of [keyboard shortcuts](Shortcuts.md) (Help → Keyboard Shortcuts).
+## Documents
+
+Everything to read is in [`documents/`](documents/):
+
+| Document | Read it when… |
+| --- | --- |
+| [**Marka.md** — the tutorial](documents/Marka.md) | You are new to Marka. A hands-on tour of every feature with examples to click, run and edit — open it in Marka (Help → Marka Tutorial) and learn by doing. |
+| [**Help.md** — what Marka is and how to use it](documents/Help.md) | You want the explanations: when to use Marka, how pictures, links, tables, Git and Publish work, explained simply. Also Help → Marka Help. |
+| [**Shortcuts.md** — every keyboard shortcut](documents/Shortcuts.md) | You want to work faster: all shortcuts on one page, by topic. Also Help → Keyboard Shortcuts. |
+| [**cli.md** — Marka on the command line](documents/cli.md) | You want PDFs from Terminal or scripts: `Marka -pdf in.md out.pdf`, a short `marka` command, exit codes, exporting a whole folder. |
+
+Contributors: [AGENTS.md](AGENTS.md) explains how Marka is built and its rules.
 
 ## License
 

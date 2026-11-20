@@ -256,7 +256,7 @@ enum MarkaUITests {
         if let dark = ProcessInfo.processInfo.environment["MARKA_MERMAID_DARK"] { _ = EditorWindowHarness.renderMermaidSheet(diagrams, to: dark, dark: true) }
 
         if let dir = ProcessInfo.processInfo.environment["MARKA_TESTMD_SNAPSHOT_DIR"],
-           let sample = try? String(contentsOfFile: "TEST.md", encoding: .utf8) {
+           let sample = try? String(contentsOfFile: "documents/Marka.md", encoding: .utf8) {
             harness.loadMarkdown(sample)
             for page in 0..<harness.pageCount { harness.pageSnapshot(page, height: 2000, to: dir + "/testmd-\(page).png") }
         }
@@ -1271,6 +1271,55 @@ enum MarkaUITests {
         // About Marka links to the GitHub project.
         expect(InsertHarness.aboutCredits.link == "https://github.com/lubino/marka" && InsertHarness.aboutCredits.text.contains("github.com/lubino/marka"),
                "About panel links to GitHub, got \(InsertHarness.aboutCredits)")
+
+        if let dir = ProcessInfo.processInfo.environment["MARKA_EXPORT_ICONS_DIR"] { IconExport.write(to: dir) }
+
+        // Help → Marka Tutorial, and its refresh keeps files made while trying it out.
+        do {
+            expect(InsertHarness.helpMenu().contains("Marka Tutorial"), "Help menu has Marka Tutorial, got \(InsertHarness.helpMenu())")
+            let fm = FileManager.default
+            let base = fm.temporaryDirectory.appendingPathComponent("marka-tutorial-\(UUID().uuidString)")
+            let source = base.appendingPathComponent("bundle"), target = base.appendingPathComponent("copy")
+            try fm.createDirectory(at: source.appendingPathComponent("assets"), withIntermediateDirectories: true)
+            try fm.createDirectory(at: target, withIntermediateDirectories: true)
+            try Data("new".utf8).write(to: source.appendingPathComponent("Marka.md"))
+            try Data("png".utf8).write(to: source.appendingPathComponent("assets/a.png"))
+            try Data("old".utf8).write(to: target.appendingPathComponent("Marka.md"))
+            try Data("mine".utf8).write(to: target.appendingPathComponent("autoload-demo.md"))
+            InsertHarness.copyMerging(from: source, to: target)
+            expect((try? String(contentsOf: target.appendingPathComponent("Marka.md"), encoding: .utf8)) == "new", "tutorial file refreshed")
+            expect(fm.fileExists(atPath: target.appendingPathComponent("assets/a.png").path), "its pictures copied")
+            expect((try? String(contentsOf: target.appendingPathComponent("autoload-demo.md"), encoding: .utf8)) == "mine", "files made while trying it out stay")
+            try? fm.removeItem(at: base)
+        } catch {
+            expect(false, "tutorial copy test failed: \(error)")
+        }
+
+        // Lists: bullets by level, numbers, checkboxes (clickable), nesting indents.
+        do {
+            let h = EditorWindowHarness()
+            let doc = "Intro\n\n- Groceries\n    - Apples\n    - Coffee\n        - Beans\n- Books with a long title that keeps going and going until it has to wrap onto a second line of the page\n\n1. Open\n1. Write\n1. Export\n\n3. Three\n4. Four\n\n- [x] Done task\n- [ ] Open task\n\n- Mixed\n    1. first\n    2. second\n\n> - in a quote\n"
+            h.loadMarkdown(doc)
+            let texts = h.listMarkers.map(\.text)
+            // "3. Three" continues the list above it across the blank line (CommonMark / GitHub): 4., 5.
+            expect(texts == ["•", "◦", "◦", "▪", "•", "1.", "2.", "3.", "4.", "5.", "[x]", "[ ]", "•", "1.", "2."],
+                   "bullets by level, GitHub numbering, checkboxes — got \(texts)")
+            let ns = doc as NSString
+            let x0 = h.textStartX(at: ns.range(of: "Groceries").location), x1 = h.textStartX(at: ns.range(of: "Apples").location)
+            let x2 = h.textStartX(at: ns.range(of: "Beans").location)
+            expect(x1 > x0 + 8 && x2 > x1 + 8, "nested items are indented, got \(x0), \(x1), \(x2)")
+            expect(h.visibleSourceCharacters(in: ns.range(of: "- [x]")).isEmpty, "list markers are hidden (drawn instead)")
+            h.clickListMarker(texts.firstIndex(of: "[ ]") ?? 0)
+            expect(h.markdown.contains("- [x] Open task"), "clicking a checkbox ticks the task")
+            h.clickListMarker(texts.firstIndex(of: "[x]") ?? 0)
+            expect(h.markdown.contains("- [ ] Done task"), "clicking a ticked checkbox unticks it")
+            if let dir = ProcessInfo.processInfo.environment["MARKA_PUBLISH_SNAPSHOT_DIR"] {
+                h.pageSnapshot(0, height: 900, to: "\(dir)/lists.png")
+            }
+            h.setSourceMode(true)
+            expect(h.listMarkers.isEmpty, "source mode shows the Markdown markers instead")
+            h.close()
+        }
 
         // Card icons: drawn by an image view filling the button, the symbol fits — nothing to cut.
         expect(FileReferenceHarness.cardIconFits() == [true, true, true, true, true], "card icons fit their buttons, got \(FileReferenceHarness.cardIconFits())")

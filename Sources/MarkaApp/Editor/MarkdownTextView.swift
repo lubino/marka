@@ -378,6 +378,7 @@ final class MarkdownTextView: NSTextView {
             }
             placements.append((rendered.image, CGRect(x: origin.x + x, y: origin.y + baseline - (size.height - rendered.baseline), width: size.width, height: size.height)))
         }
+        placements.append(contentsOf: listMarkerPlacements(origin: origin).map { ($0.image, $0.rect) })
         // Emoji over hidden :shortcodes: — drawn as text images on the same baseline.
         let body = Theme.bodyFont(editorSettings)
         storage.enumerateAttribute(.markaEmoji, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
@@ -405,6 +406,102 @@ final class MarkdownTextView: NSTextView {
             placements.append((image, CGRect(x: origin.x + x, y: origin.y + baseline - body.ascender, width: size.width, height: size.height)))
         }
         return placements
+    }
+
+    /// Bullets, numbers and checkboxes of list items (screen and PDF), with the checkbox range of
+    /// tasks so a click can toggle them.
+    func listMarkerPlacements(origin containerOrigin: CGPoint? = nil) -> [(image: NSImage, rect: CGRect, marker: NSRange, box: ListMarkerBox)] {
+        guard let storage = textStorage, storage.length > 0, mode == .wysiwyg else { return [] }
+        let origin = containerOrigin ?? textContainerOrigin
+        let font = Theme.bodyFont(editorSettings)
+        let ink = Theme.bodyColor(darkPaper: editorSettings.darkPaper)
+        let dark = editorSettings.darkPaper
+        var result: [(NSImage, CGRect, NSRange, ListMarkerBox)] = []
+        storage.enumerateAttribute(.markaListMarker, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard let box = value as? ListMarkerBox, range.length > 0 else { return }
+            var x: CGFloat = 0, baseline: CGFloat = 0
+            if let lm = layoutManager, textLayoutManager == nil {
+                let glyph = lm.glyphIndexForCharacter(at: range.location)
+                let line = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                let location = lm.location(forGlyphAt: glyph)
+                x = line.minX + location.x
+                baseline = line.minY + location.y
+            } else if let first = segmentRects(for: NSRange(location: range.location, length: 1)).first {
+                x = first.minX
+                baseline = first.maxY - abs(font.descender)
+            } else {
+                return
+            }
+            let size = font.pointSize
+            let height = ceil(font.ascender - font.descender)
+            let rect = CGRect(x: origin.x + x, y: origin.y + baseline - font.ascender, width: box.width, height: height)
+            let image = NSImage(size: rect.size, flipped: true) { bounds in
+                // Markers sit on the middle of the lowercase letters (x-height), like GitHub's.
+                let middle = font.ascender - font.xHeight / 2
+                switch box.kind {
+                case .bullet:
+                    // Shapes, not glyphs: "•" and "◦" look alike at text size.
+                    let d = max(3, round(size * 0.36))
+                    let dot = CGRect(x: bounds.width / 2 - d / 2 - size * 0.15, y: middle - d / 2, width: d, height: d)
+                    ink.setFill()
+                    ink.setStroke()
+                    switch box.level % 3 {
+                    case 0: NSBezierPath(ovalIn: dot).fill()
+                    case 1:
+                        let ring = NSBezierPath(ovalIn: dot.insetBy(dx: 0.6, dy: 0.6))
+                        ring.lineWidth = 1.1
+                        ring.stroke()
+                    default: NSBezierPath(rect: dot.insetBy(dx: 0.4, dy: 0.4)).fill()
+                    }
+                case .ordered(let number):
+                    let text = "\(number)." as NSString
+                    let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink]
+                    let w = text.size(withAttributes: attributes).width
+                    text.draw(at: CGPoint(x: bounds.width - w - size * 0.45, y: 0), withAttributes: attributes)
+                case .task(let checked):
+                    let side = round(size * 1.05)
+                    let square = CGRect(x: (bounds.width - side) / 2 - size * 0.2, y: max(0.5, middle - side / 2), width: side, height: side)
+                    let path = NSBezierPath(roundedRect: square.insetBy(dx: 0.5, dy: 0.5), xRadius: 2.5, yRadius: 2.5)
+                    let accent = NSColor(srgbRed: 0.035, green: 0.412, blue: 0.855, alpha: 1)
+                    if checked {
+                        accent.setFill()
+                        path.fill()
+                        let tick = NSBezierPath()
+                        tick.move(to: CGPoint(x: square.minX + side * 0.24, y: square.minY + side * 0.52))
+                        tick.line(to: CGPoint(x: square.minX + side * 0.43, y: square.minY + side * 0.72))
+                        tick.line(to: CGPoint(x: square.minX + side * 0.78, y: square.minY + side * 0.3))
+                        tick.lineWidth = max(1.2, side * 0.13)
+                        tick.lineCapStyle = .round
+                        tick.lineJoinStyle = .round
+                        NSColor.white.setStroke()
+                        tick.stroke()
+                    } else {
+                        (dark ? NSColor(white: 0.16, alpha: 1) : NSColor.white).setFill()
+                        path.fill()
+                        Theme.paperSecondaryText(darkPaper: dark).setStroke()
+                        path.lineWidth = 1
+                        path.stroke()
+                    }
+                }
+                return true
+            }
+            result.append((image, rect, range, box))
+        }
+        return result
+    }
+
+    /// Click on a task's checkbox: tick / untick it (one undo step).
+    func toggleTaskIfCheckbox(at point: NSPoint) -> Bool {
+        guard mode == .wysiwyg else { return false }
+        for placement in listMarkerPlacements() {
+            guard case .task = placement.box.kind, placement.rect.insetBy(dx: -2, dy: -2).contains(point) else { continue }
+            guard let item = MarkdownSyntax.listItems(in: string).first(where: { $0.marker.location == placement.marker.location }),
+                  let checkbox = item.checkbox,
+                  let result = MarkdownEditing.toggleTask(source: string, checkbox: checkbox) else { return false }
+            applyEdit(EditResult(text: result.text, selected: selectedRange()))
+            return true
+        }
+        return false
     }
 
     func drawInlineCodeBoxesForExport(origin: CGPoint) {
@@ -511,6 +608,7 @@ final class MarkdownTextView: NSTextView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if toggleTaskIfCheckbox(at: convert(event.locationInWindow, from: nil)) { return }
         if mode == .wysiwyg, event.modifierFlags.contains(.command) {
             let index = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
             if let link = MarkdownEditing.link(at: index, in: string) {

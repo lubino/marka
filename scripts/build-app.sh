@@ -29,8 +29,14 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
-# Help → Marka Help / Keyboard Shortcuts open these in Marka.
-cp "$ROOT_DIR/Help.md" "$ROOT_DIR/Shortcuts.md" "$APP_BUNDLE/Contents/Resources/"
+# Help → Marka Help / Keyboard Shortcuts / Marka Tutorial open these in Marka.
+cp "$ROOT_DIR/documents/Help.md" "$ROOT_DIR/documents/Shortcuts.md" "$APP_BUNDLE/Contents/Resources/"
+mkdir -p "$APP_BUNDLE/Contents/Resources/Tutorial"
+cp "$ROOT_DIR/documents/Marka.md" "$APP_BUNDLE/Contents/Resources/Tutorial/"
+# No Finder metadata in the bundle: codesign rejects extended attributes and .DS_Store files.
+ditto --norsrc --noextattr --noqtn "$ROOT_DIR/documents/assets" "$APP_BUNDLE/Contents/Resources/Tutorial/assets"
+find "$APP_BUNDLE" -name .DS_Store -delete
+xattr -cr "$APP_BUNDLE"
 chmod +x "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
 # SwiftPM's default (Swift Build) backend stamps LC_BUILD_VERSION with "sdk 14.0" (the deployment
