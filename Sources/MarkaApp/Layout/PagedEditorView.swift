@@ -290,6 +290,7 @@ final class PagedEditorView: NSView {
             return fragment.layoutFragmentFrame.maxY
         }
         if let lm = textView.layoutManager {
+            layOutThrough(utf16Offset, in: lm)
             let glyph = lm.glyphIndexForCharacter(at: utf16Offset)
             return lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).maxY
         }
@@ -332,10 +333,22 @@ final class PagedEditorView: NSView {
             }
         }
         if let lm = textView.layoutManager {
-            let glyph = lm.glyphIndexForCharacter(at: min(utf16Offset, max(0, textView.string.utf16.count - 1)))
+            let offset = min(utf16Offset, max(0, textView.string.utf16.count - 1))
+            layOutThrough(offset, in: lm)
+            let glyph = lm.glyphIndexForCharacter(at: offset)
             return lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY
         }
         return 0
+    }
+
+    /// Lays the text out from the start through `utf16Offset`. With non-contiguous layout,
+    /// asking for one line's rect lays out only around it and *estimates* everything above, so a
+    /// long document's last line could read as page 5 when it sits on page 7 (it depended on the
+    /// window size). Positions are only real once the text before them is laid out.
+    private func layOutThrough(_ utf16Offset: Int, in lm: NSLayoutManager) {
+        let length = textView.string.utf16.count
+        guard length > 0 else { return }
+        lm.ensureLayout(forCharacterRange: NSRange(location: 0, length: min(length, utf16Offset + 1)))
     }
 
     /// 0-based page that holds the given source location (e.g. the caret).

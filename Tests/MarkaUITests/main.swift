@@ -375,6 +375,12 @@ enum MarkaUITests {
         let fill = (1...140).map { "Line \($0) of text that fills the pages." }.joined(separator: "\n\n")
         harness.loadMarkdown(fill + "\n\n\n\n")
         harness.settleLayout()
+        // Same answer at any window size (positions were estimated, so small windows read wrong).
+        for size in [NSSize(width: 900, height: 600), NSSize(width: 1300, height: 900)] {
+            harness.moveWindow(to: NSRect(origin: NSPoint(x: 20, y: 40), size: size))
+            harness.settleLayout()
+            expect(harness.pageCount == harness.lastContentPage + 1, "page of the last line at \(size): pages \(harness.pageCount), content ends on \(harness.lastContentPage + 1)")
+        }
         expect(harness.pageCount == harness.lastContentPage + 1, "trailing blank lines add no page (pages \(harness.pageCount), content ends on \(harness.lastContentPage + 1))")
         harness.select(NSRange(location: 0, length: (harness.markdown as NSString).length))
         harness.typeAtCaret("Short again")
