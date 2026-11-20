@@ -437,6 +437,20 @@ public final class EditorWindowHarness {
         return document.pendingString ?? document.loadedString
     }
 
+    /// Waits until page layout has settled: no relayout queued and the page count unchanged over
+    /// two checks (slow machines, such as CI runners, need longer than a fixed pause).
+    public func settleLayout(timeout: TimeInterval = 5) {
+        let end = Date().addingTimeInterval(timeout)
+        var last = -1
+        var stable = 0
+        while Date() < end, stable < 2 {
+            pump(0.1)
+            let pages = pageCount
+            stable = (pages == last && !controller.testCanvas.hasPendingRelayout) ? stable + 1 : 0
+            last = pages
+        }
+    }
+
     public func pump(_ seconds: TimeInterval = 0.05) {
         let until = Date().addingTimeInterval(seconds)
         while Date() < until {

@@ -60,7 +60,9 @@ enum MarkaUITests {
         let fresh = EditorWindowHarness.newWindowFrame()
         if let screen = NSScreen.main?.visibleFrame {
             expect(abs(fresh.midX - screen.midX) < 2 && fresh.minY > screen.minY + 1, "first window is centred, not in the bottom-left corner, got \(fresh)")
-            let placed = NSRect(x: screen.minX + 120, y: screen.minY + 90, width: 900, height: 640)
+            // A frame that fits the screen (CI runners have small displays).
+            let placed = NSRect(x: screen.minX + 120, y: screen.minY + 90,
+                                width: min(900, screen.width - 200), height: min(640, screen.height - 150))
             harness.moveWindow(to: placed)
             let next = EditorWindowHarness.newWindowFrame()
             expect(next.size == placed.size && abs(next.minX - placed.minX) < 40 && abs(next.maxY - placed.maxY) < 40, "a new window reopens where the last one was, got \(next) vs \(placed)")
@@ -372,6 +374,7 @@ enum MarkaUITests {
         expect(harness.pageCount == 1, "a short document is one page, got \(harness.pageCount)")
         let fill = (1...140).map { "Line \($0) of text that fills the pages." }.joined(separator: "\n\n")
         harness.loadMarkdown(fill + "\n\n\n\n")
+        harness.settleLayout()
         expect(harness.pageCount == harness.lastContentPage + 1, "trailing blank lines add no page (pages \(harness.pageCount), content ends on \(harness.lastContentPage + 1))")
         harness.select(NSRange(location: 0, length: (harness.markdown as NSString).length))
         harness.typeAtCaret("Short again")

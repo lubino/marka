@@ -322,7 +322,9 @@ final class CellFieldEditor: NSTextView {
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         let pictures = pictureRects()
-        if let index = pictures.firstIndex(where: { $0.rect.contains(point) }), let field = delegate as? MarkdownCellField {
+        // Through AnyObject: Swift treats a direct NSTextViewDelegate → NSTextField cast as
+        // impossible and compiles it to "always nil", but the field editor's delegate is the cell.
+        if let index = pictures.firstIndex(where: { $0.rect.contains(point) }), let field = (delegate as AnyObject?) as? MarkdownCellField {
             field.onImageClick?(field, index)
             return
         }

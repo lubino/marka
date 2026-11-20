@@ -2158,6 +2158,14 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
                 return
             }
         }
+        // A small screen (or a big default size): fit the window inside it before centring, or
+        // centring pushes it past the screen's edges.
+        if let visible = (window.screen ?? NSScreen.main)?.visibleFrame {
+            var frame = window.frame
+            frame.size.width = max(window.minSize.width, min(frame.width, visible.width - 40))
+            frame.size.height = max(window.minSize.height, min(frame.height, visible.height - 40))
+            window.setFrame(frame, display: false)
+        }
         window.center()
     }
 
