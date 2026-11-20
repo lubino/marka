@@ -29,6 +29,8 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+# Help → Marka Help / Keyboard Shortcuts open these in Marka.
+cp "$ROOT_DIR/Help.md" "$ROOT_DIR/Shortcuts.md" "$APP_BUNDLE/Contents/Resources/"
 chmod +x "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
 # SwiftPM's default (Swift Build) backend stamps LC_BUILD_VERSION with "sdk 14.0" (the deployment

@@ -16,6 +16,18 @@ public struct EditorSettings: Equatable, Sendable {
     public var wordGoal: Int
     /// Show the page-number control in the toolbar.
     public var showPageControl: Bool
+    /// Reload the document when another app changes its file (unsaved edits ask first).
+    public var autoload: Bool
+    /// Publish (commit + push) and adding new files to git; only effective when git is installed.
+    public var gitIntegration: Bool
+    /// On opening a tracked file, look for a newer published version (asks before updating).
+    public var checkPublishedUpdates: Bool
+    /// Update to a newer published version without asking.
+    public var autoUpdatePublished: Bool
+    /// Show GitHub `:shortcodes:` as emoji (off by default).
+    public var emojiShortcodes: Bool
+    /// Run in Terminal: show the result and wait for a key press before the script ends (off).
+    public var waitAfterScript: Bool
 
     public static let `default` = EditorSettings(
         fontName: "Times New Roman",
@@ -40,7 +52,13 @@ public struct EditorSettings: Equatable, Sendable {
         zoomMode: String = "auto",
         zoomFactor: CGFloat = 1,
         wordGoal: Int = 0,
-        showPageControl: Bool = true
+        showPageControl: Bool = true,
+        autoload: Bool = true,
+        gitIntegration: Bool = true,
+        checkPublishedUpdates: Bool = true,
+        autoUpdatePublished: Bool = false,
+        emojiShortcodes: Bool = false,
+        waitAfterScript: Bool = false
     ) {
         self.fontName = fontName
         self.fontSize = fontSize
@@ -53,7 +71,16 @@ public struct EditorSettings: Equatable, Sendable {
         self.zoomFactor = zoomFactor
         self.wordGoal = wordGoal
         self.showPageControl = showPageControl
+        self.autoload = autoload
+        self.gitIntegration = gitIntegration
+        self.checkPublishedUpdates = checkPublishedUpdates
+        self.autoUpdatePublished = autoUpdatePublished
+        self.emojiShortcodes = emojiShortcodes
+        self.waitAfterScript = waitAfterScript
     }
+
+    /// Git integration is on and git is installed.
+    public var gitEnabled: Bool { gitIntegration && Git.installed != nil }
 
     public var geometry: PageGeometry {
         PageGeometry.a4(marginMillimetres: marginMillimetres, showPageNumbers: showPageNumbers)
@@ -102,6 +129,18 @@ public final class SettingsStore: @unchecked Sendable {
         if defaults.object(forKey: prefix + "showPageControl") != nil {
             s.showPageControl = defaults.bool(forKey: prefix + "showPageControl")
         }
+        if defaults.object(forKey: prefix + "autoload") != nil {
+            s.autoload = defaults.bool(forKey: prefix + "autoload")
+        }
+        if defaults.object(forKey: prefix + "gitIntegration") != nil {
+            s.gitIntegration = defaults.bool(forKey: prefix + "gitIntegration")
+        }
+        if defaults.object(forKey: prefix + "checkPublishedUpdates") != nil {
+            s.checkPublishedUpdates = defaults.bool(forKey: prefix + "checkPublishedUpdates")
+        }
+        s.autoUpdatePublished = defaults.bool(forKey: prefix + "autoUpdatePublished")
+        s.emojiShortcodes = defaults.bool(forKey: prefix + "emojiShortcodes")
+        s.waitAfterScript = defaults.bool(forKey: prefix + "waitAfterScript")
         let storedVersion = defaults.integer(forKey: prefix + "settingsVersion")
         if storedVersion < 2 {
             let storedName = defaults.string(forKey: prefix + "fontName")
@@ -132,5 +171,11 @@ public final class SettingsStore: @unchecked Sendable {
         defaults.set(Double(current.zoomFactor), forKey: prefix + "zoomFactor")
         defaults.set(current.wordGoal, forKey: prefix + "wordGoal")
         defaults.set(current.showPageControl, forKey: prefix + "showPageControl")
+        defaults.set(current.autoload, forKey: prefix + "autoload")
+        defaults.set(current.gitIntegration, forKey: prefix + "gitIntegration")
+        defaults.set(current.checkPublishedUpdates, forKey: prefix + "checkPublishedUpdates")
+        defaults.set(current.autoUpdatePublished, forKey: prefix + "autoUpdatePublished")
+        defaults.set(current.emojiShortcodes, forKey: prefix + "emojiShortcodes")
+        defaults.set(current.waitAfterScript, forKey: prefix + "waitAfterScript")
     }
 }

@@ -379,6 +379,17 @@ enum MathRenderer {
                 var box = Box()
                 if height <= natural.height * 1.15 {
                     box = glyphBox(symbol, font: font, cls: .ordinary)
+                } else if symbol == "|" || symbol == "‖" {
+                    // Bars stay thin rules: scaling the glyph to a delimiter's width made a block.
+                    let bars = symbol == "‖" ? 2 : 1
+                    let gap = em * 0.12
+                    let pad = em * 0.08
+                    for i in 0..<bars {
+                        box.items.append(.rect(CGRect(x: pad + CGFloat(i) * gap, y: axis - half, width: rule, height: height), color))
+                    }
+                    box.width = pad * 2 + CGFloat(bars - 1) * gap + rule
+                    box.ascent = axis + half
+                    box.descent = half - axis
                 } else {
                     let width = max(natural.width, em * 0.32) * min(1.6, 1 + (height / natural.height - 1) * 0.12)
                     box.items = [.scaledGlyph(symbol, font, CGPoint(x: em * 0.04, y: axis - half), CGSize(width: width, height: height), color)]

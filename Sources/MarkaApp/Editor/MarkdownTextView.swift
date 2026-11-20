@@ -10,6 +10,11 @@ protocol MarkdownTextViewDelegate: AnyObject {
     func markdownTextViewDidChangeSelection(_ view: MarkdownTextView)
     func markdownTextViewDidRequestLinkCard(_ view: MarkdownTextView)
     var documentDirectory: URL? { get }
+    /// Work-tree root while the document is tracked by git (files inside it need no copy).
+    var trackedRoot: URL? { get }
+    var documentFileURL: URL? { get }
+    /// `[x](#heading)`: scroll to that heading.
+    func markdownTextView(_ view: MarkdownTextView, openAnchor anchor: String)
 }
 
 final class MarkdownTextView: NSTextView {
@@ -175,6 +180,16 @@ final class MarkdownTextView: NSTextView {
         setSelectedRange(NSRange(location: 0, length: 0))
     }
 
+    /// Opens a link target: `#anchor` scrolls to the heading, anything else via `Hyperlink.open`.
+    func openLink(_ url: String) {
+        let trimmed = url.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("#") {
+            markdownDelegate?.markdownTextView(self, openAnchor: trimmed)
+        } else {
+            Hyperlink.open(trimmed, relativeTo: markdownDelegate?.documentDirectory)
+        }
+    }
+
     func currentSource() -> String { string }
 
     /// Window-point test for clickable chrome drawn over the text (code-block icons). The text view
@@ -282,8 +297,11 @@ final class MarkdownTextView: NSTextView {
         }
         storage.enumerateAttribute(.markaInlineCode, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
             guard value != nil, range.length > 0 else { return }
-            let font = (storage.attribute(.font, at: range.location + min(range.length - 1, 1), effectiveRange: nil) as? NSFont)
-                ?? NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+            // The first visible character's font (hidden markers — backticks, <kbd> tags — are tiny).
+            var font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+            storage.enumerateAttribute(.font, in: range) { value, _, stop in
+                if let candidate = value as? NSFont, candidate.pointSize > 1 { font = candidate; stop.pointee = true }
+            }
             if let tlm = textLayoutManager, let content = textContentStorage {
                 guard let start = content.location(tlm.documentRange.location, offsetBy: range.location),
                       let end = content.location(start, offsetBy: range.length),
@@ -359,6 +377,32 @@ final class MarkdownTextView: NSTextView {
                 return
             }
             placements.append((rendered.image, CGRect(x: origin.x + x, y: origin.y + baseline - (size.height - rendered.baseline), width: size.width, height: size.height)))
+        }
+        // Emoji over hidden :shortcodes: — drawn as text images on the same baseline.
+        let body = Theme.bodyFont(editorSettings)
+        storage.enumerateAttribute(.markaEmoji, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard let emoji = value as? String, range.length > 0 else { return }
+            var x: CGFloat = 0, baseline: CGFloat = 0
+            if let lm = layoutManager, textLayoutManager == nil {
+                let glyph = lm.glyphIndexForCharacter(at: range.location)
+                let line = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                let location = lm.location(forGlyphAt: glyph)
+                x = line.minX + location.x
+                baseline = line.minY + location.y
+            } else if let first = segmentRects(for: NSRange(location: range.location, length: 1)).first {
+                x = first.minX
+                baseline = first.maxY - abs(body.descender)
+            } else {
+                return
+            }
+            let text = NSAttributedString(string: emoji, attributes: [.font: body])
+            let size = text.size()
+            let image = NSImage(size: size, flipped: true) { rect in
+                text.draw(at: .zero)
+                return true
+            }
+            // The image's text baseline sits one ascender below its top.
+            placements.append((image, CGRect(x: origin.x + x, y: origin.y + baseline - body.ascender, width: size.width, height: size.height)))
         }
         return placements
     }
@@ -459,7 +503,7 @@ final class MarkdownTextView: NSTextView {
     override func clicked(onLink link: Any, at charIndex: Int) {
         if NSEvent.modifierFlags.contains(.command) {
             let url = (link as? URL)?.absoluteString ?? (link as? String) ?? MarkdownEditing.link(at: charIndex, in: string)?.url
-            if let url { Hyperlink.open(url, relativeTo: markdownDelegate?.documentDirectory) }
+            if let url { openLink(url) }
             return
         }
         setSelectedRange(NSRange(location: charIndex, length: 0))
@@ -470,7 +514,7 @@ final class MarkdownTextView: NSTextView {
         if mode == .wysiwyg, event.modifierFlags.contains(.command) {
             let index = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
             if let link = MarkdownEditing.link(at: index, in: string) {
-                Hyperlink.open(link.url, relativeTo: markdownDelegate?.documentDirectory)
+                openLink(link.url)
                 return
             }
         }
@@ -520,42 +564,29 @@ final class MarkdownTextView: NSTextView {
         return super.performDragOperation(sender)
     }
 
-    func insertDroppedFile(_ url: URL) {
-        let ext = url.pathExtension.lowercased()
-        let imageExts = ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "heic"]
-        guard imageExts.contains(ext) else {
-            let result = MarkdownEditing.insertLink(
-                source: string,
-                selected: selectedRange(),
-                url: url.lastPathComponent
-            )
-            applyEdit(result)
-            return
-        }
-        let destPath = copyAsset(url)
-        let result = MarkdownEditing.insertImage(
-            source: string,
-            selected: selectedRange(),
-            path: destPath,
-            alt: url.deletingPathExtension().lastPathComponent
-        )
-        applyEdit(result)
-    }
+    static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "heic", "svg", "pdf"]
 
-    func copyAsset(_ url: URL) -> String {
-        guard let dir = markdownDelegate?.documentDirectory else {
-            return url.path
+    /// Inserts a dropped / picked file: images as `![…](…)`, other files as links. Files outside
+    /// the document's repository (or folder) ask first: copy next to the document, or reference
+    /// the original (`FileReference`).
+    func insertDroppedFile(_ url: URL) {
+        let isImage = Self.imageExtensions.contains(url.pathExtension.lowercased())
+        let selection = selectedRange()
+        FileReference.resolve(
+            url,
+            kind: isImage ? .image : .link,
+            documentDirectory: markdownDelegate?.documentDirectory,
+            trackedRoot: markdownDelegate?.trackedRoot,
+            window: window
+        ) { [weak self] path in
+            guard let self, let path else { return }
+            let source = self.string
+            let range = NSRange(location: min(selection.location, (source as NSString).length), length: min(selection.length, max(0, (source as NSString).length - selection.location)))
+            let result = isImage
+                ? MarkdownEditing.insertImage(source: source, selected: range, path: path, alt: url.deletingPathExtension().lastPathComponent)
+                : MarkdownEditing.insertLink(source: source, selected: range, url: path)
+            self.applyEdit(result)
         }
-        let assets = dir.appendingPathComponent("assets", isDirectory: true)
-        try? FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
-        var dest = assets.appendingPathComponent(url.lastPathComponent)
-        var i = 1
-        while FileManager.default.fileExists(atPath: dest.path) {
-            dest = assets.appendingPathComponent("\(url.deletingPathExtension().lastPathComponent)-\(i).\(url.pathExtension)")
-            i += 1
-        }
-        try? FileManager.default.copyItem(at: url, to: dest)
-        return "assets/\(dest.lastPathComponent)"
     }
 
     override func insertNewline(_ sender: Any?) {

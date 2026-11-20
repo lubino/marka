@@ -79,7 +79,8 @@ public struct DocumentStats: Equatable, Sendable {
         return stats
     }
 
-    private static let imagePattern = try! NSRegularExpression(pattern: #"!\[[^\]]*\]\([^)]*\)"#)
+    /// `![alt](src)` and GitHub's `<img …>` (image options write those).
+    private static let imagePattern = try! NSRegularExpression(pattern: #"!\[[^\]]*\]\([^)]*\)|<img\b[^>]*>"#, options: [.caseInsensitive])
     private static let linkPattern = try! NSRegularExpression(pattern: #"(?<!!)\[[^\]]*\]\([^)]*\)"#)
     private static let taskPattern = try! NSRegularExpression(pattern: #"^(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s"#)
 

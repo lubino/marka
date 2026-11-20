@@ -78,6 +78,18 @@ enum Theme {
         darkPaper ? NSColor(white: 0.28, alpha: 1) : NSColor(srgbRed: 0.816, green: 0.843, blue: 0.871, alpha: 1)
     }
 
+    /// Secondary text *on the paper* (code-block language, image placeholders): a fixed colour for
+    /// the paper, never a dynamic system colour. Dynamic colours follow the window's appearance
+    /// (wrong on white paper in dark mode) and were resolved to nil when pages were drawn
+    /// off-screen for thumbnails — CoreText then aborted copying the text attributes
+    /// ("attempt to insert nil object").
+    static func paperSecondaryText(darkPaper: Bool) -> NSColor {
+        darkPaper ? NSColor(srgbRed: 0.62, green: 0.65, blue: 0.69, alpha: 1) : NSColor(srgbRed: 0.40, green: 0.44, blue: 0.49, alpha: 1)
+    }
+
+    /// The monospaced label font, created once.
+    @MainActor static let codeLabelFont: NSFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
+
     static func drawCodeBlockFill(in rect: CGRect, darkPaper: Bool) {
         guard rect.width > 1, rect.height > 1 else { return }
         let path = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
@@ -196,6 +208,8 @@ extension NSAttributedString.Key {
     static let markaInlineCode = NSAttributedString.Key("MarkaInlineCode")
     /// Marks a hidden inline `$…$` group; the value is the LaTeX source to draw.
     static let markaInlineMath = NSAttributedString.Key("MarkaInlineMath")
+    /// An emoji drawn over its hidden `:shortcode:` (Settings → emoji shortcodes).
+    static let markaEmoji = NSAttributedString.Key("MarkaEmoji")
 }
 
 enum StyleEngine {
@@ -266,6 +280,9 @@ enum StyleEngine {
                 continue
             }
 
+            if span.kind == .keyboard, span.role == .marker, mode == .wysiwyg {
+                storage.addAttribute(.markaInlineCode, value: true, range: span.group)
+            }
             if case .inlineCode = span.kind, span.role == .marker {
                 storage.addAttribute(.markaInlineCode, value: true, range: span.group)
             }
@@ -280,6 +297,10 @@ enum StyleEngine {
                 if case .inlineCode = span.kind {
                     // The hidden backticks become the box's left/right padding.
                     hide[.kern] = Theme.inlineCodePadding / CGFloat(max(1, span.range.length))
+                }
+                if span.kind == .keyboard {
+                    // Padding comes from the content's ends (below); the tags take no room.
+                    hide[.kern] = 0
                 }
                 if case .codeBlock = span.kind {
                     let isOpen = span.range.location == span.group.location
@@ -308,6 +329,25 @@ enum StyleEngine {
                 storage.addAttribute(.font, value: NSFontManager.shared.convert(font, toHaveTrait: trait), range: range)
             }
             storage.addAttribute(.foregroundColor, value: bodyColor, range: span.range)
+        }
+        // <kbd>: the box's right padding on the key's last character (left: on the opening tag, below).
+        if mode == .wysiwyg {
+            for span in spans where span.kind == .keyboard && span.role == .content && span.range.length > 0 {
+                guard NSMaxRange(span.range) <= storage.length, span.range.location > 0 else { continue }
+                storage.addAttribute(.kern, value: Theme.inlineCodePadding, range: NSRange(location: NSMaxRange(span.range) - 1, length: 1))
+            }
+        }
+        // Superscript / subscript shrink whatever font is there and move it off the baseline.
+        for span in spans where span.role == .content && (span.kind == .superscript || span.kind == .subscript) {
+            guard span.range.length > 0, NSMaxRange(span.range) <= storage.length else { continue }
+            let up = span.kind == .superscript
+            storage.enumerateAttribute(.font, in: span.range) { value, range, _ in
+                let font = (value as? NSFont) ?? body
+                storage.addAttributes([
+                    .font: font.withSize(font.pointSize * 0.72),
+                    .baselineOffset: up ? font.pointSize * 0.38 : -font.pointSize * 0.14
+                ], range: range)
+            }
         }
         highlightCode(in: storage, spans: spans, darkPaper: settings.darkPaper)
         if mode == .wysiwyg {
@@ -348,6 +388,14 @@ enum StyleEngine {
                 guard span.range.length > 0, NSMaxRange(span.range) <= storage.length else { continue }
                 if case .inlineCode = span.kind { continue }   // keeps its padding kern
                 if case .inlineMath = span.kind { continue }   // styled (hidden or revealed) below
+                if span.kind == .keyboard {
+                    // <kbd> tags take no room; the opening one carries the box's left padding.
+                    storage.addAttributes([.font: NSFont.systemFont(ofSize: 0.01), .foregroundColor: NSColor.clear, .kern: 0], range: span.range)
+                    if span.range.location == span.group.location {
+                        storage.addAttribute(.kern, value: Theme.inlineCodePadding, range: NSRange(location: NSMaxRange(span.range) - 1, length: 1))
+                    }
+                    continue
+                }
                 storage.addAttributes([
                     .font: NSFont.systemFont(ofSize: 0.01),
                     .foregroundColor: NSColor.clear,
@@ -379,6 +427,24 @@ enum StyleEngine {
                 ], range: group)
                 storage.addAttribute(.kern, value: rendered.image.size.width, range: NSRange(location: NSMaxRange(group) - 1, length: 1))
             }
+            // :shortcodes: as emoji (GitHub renders them; off by default). With the caret inside, the
+            // code shows so it can be edited.
+            if settings.emojiShortcodes {
+                for match in EmojiCatalog.matches(in: storage.string, includeEmoticons: false)
+                    where NSIntersectionRange(match.range, region).length == match.range.length {
+                    let caretInside = selection.location > match.range.location && selection.location < NSMaxRange(match.range)
+                        || NSIntersectionRange(selection, match.range).length > 0
+                    guard !caretInside else { continue }
+                    let width = (match.emoji as NSString).size(withAttributes: [.font: body]).width
+                    storage.addAttributes([
+                        .font: NSFont.systemFont(ofSize: 0.01),
+                        .foregroundColor: NSColor.clear,
+                        .kern: 0,
+                        .markaEmoji: match.emoji
+                    ], range: match.range)
+                    storage.addAttribute(.kern, value: width, range: NSRange(location: NSMaxRange(match.range) - 1, length: 1))
+                }
+            }
             // Drawn blocks (```math, $$…$$, ```mermaid): collapse the source like a table's and
             // reserve the drawing's height after its last line.
             for span in spans {
@@ -397,6 +463,38 @@ enum StyleEngine {
                                              value: Theme.collapsedTableParagraph(spacingAfter: extraBlockSpacing[span.group.location] ?? 0),
                                              range: lastLine)
                     }
+                }
+            }
+            // GitHub alerts: "[!NOTE]" is hidden; its line stays a full-height title row where the
+            // quote chrome draws the icon and title. Alert text keeps the body colour (GitHub).
+            for alert in MarkdownSyntax.alerts(in: storage.string) where NSMaxRange(alert.group) <= storage.length
+                && NSIntersectionRange(alert.group, region).length > 0 {
+                storage.addAttribute(.foregroundColor, value: bodyColor, range: alert.group)
+                storage.addAttributes([.font: NSFont.systemFont(ofSize: 0.01), .foregroundColor: NSColor.clear, .kern: 0], range: alert.marker)
+                let titleLine = ns.lineRange(for: alert.marker)
+                let title = Theme.bodyParagraph(indent: 18, spacingAfter: 2).mutableCopy() as! NSMutableParagraphStyle
+                title.minimumLineHeight = ceil(settings.fontSize * 1.6)
+                title.paragraphSpacingBefore = 4
+                storage.addAttribute(.paragraphStyle, value: title, range: titleLine)
+            }
+            // Images (GitHub look): the `![alt](src)` source is hidden and the picture is drawn in
+            // space reserved after its line; a line of only images collapses so they take its place.
+            for imageLine in MarkdownSyntax.imageLines(in: storage.string, spans: spans) {
+                let lineRange = ns.lineRange(for: imageLine.line)
+                guard NSMaxRange(lineRange) <= storage.length else { continue }
+                let hidden: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 0.01), .foregroundColor: NSColor.clear, .kern: 0]
+                let extra = extraBlockSpacing[imageLine.line.location] ?? 0
+                if imageLine.imageOnly {
+                    storage.addAttributes(hidden, range: lineRange)
+                    storage.addAttribute(.paragraphStyle, value: Theme.collapsedTableParagraph(spacingAfter: extra), range: lineRange)
+                } else {
+                    for image in imageLine.images where NSMaxRange(image.fullRange) <= storage.length {
+                        storage.addAttributes(hidden, range: image.fullRange)
+                    }
+                    let current = (storage.attribute(.paragraphStyle, at: lineRange.location, effectiveRange: nil) as? NSParagraphStyle) ?? baseStyle
+                    let style = (current.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+                    style.paragraphSpacing = current.paragraphSpacing + extra
+                    storage.addAttribute(.paragraphStyle, value: style, range: lineRange)
                 }
             }
             // Last: a table's GFM source sits under the opaque table overlay and must stay invisible.
@@ -510,6 +608,14 @@ enum StyleEngine {
             attrs[.paragraphStyle] = Theme.bodyParagraph(spacingBefore: 12, spacingAfter: 12, alignment: .center)
         case .inlineMath:
             break   // drawn by MarkdownTextView (WYSIWYG) / shown as source
+        case .underline:
+            if span.role == .content { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+        case .superscript, .subscript:
+            break   // sized in their own pass (after every other font is set)
+        case .keyboard:
+            if span.role == .content {
+                attrs[.font] = NSFont.monospacedSystemFont(ofSize: settings.fontSize * 0.85, weight: .regular)
+            }
         case .paragraph, .syntax:
             break
         }

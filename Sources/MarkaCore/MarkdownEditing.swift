@@ -49,6 +49,10 @@ public enum MarkdownEditing {
         public var bold = false
         public var italic = false
         public var strike = false
+        public var underline = false
+        public var superscript = false
+        public var `subscript` = false
+        public var keyboard = false
         public var inlineCode = false
         public var link = false
         public var quote = false
@@ -136,6 +140,14 @@ public enum MarkdownEditing {
                 state.italic = true
             case .strikethrough:
                 state.strike = true
+            case .underline:
+                state.underline = true
+            case .superscript:
+                state.superscript = true
+            case .subscript:
+                state.`subscript` = true
+            case .keyboard:
+                state.keyboard = true
             case .inlineCode:
                 state.inlineCode = true
             case .link:

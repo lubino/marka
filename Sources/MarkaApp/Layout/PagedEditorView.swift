@@ -13,14 +13,21 @@ final class PagedEditorView: NSView {
     var onPagesChanged: ((Int) -> Void)?
     var onEditContextChanged: (() -> Void)?
     var documentDirectory: URL?
-    private var imageOverlays: [NSImageView] = []
+    var imageViews: [ImageBlockView] = []
+    let imageCard = LinkCardView(imageMode: true)
+    var imageCardLocation: Int?
+    /// Where the image card points for a picture in a table cell (canvas rect).
+    var imageCardAnchor: CGRect?
     private var codeBackgrounds: [CodeBlockBackgroundView] = []
-    private var codeHeaders: [CodeBlockHeaderView] = []
+    private(set) var codeHeaders: [CodeBlockHeaderView] = []
     private var pagesTables: [PagesTableView] = []
     /// Drawn ```math / $$ / ```mermaid blocks (RenderedBlocks.swift).
     var renderedViews: [RenderedBlockView] = []
     var renderedEditor: RenderedSourceEditor?
-    private let linkCard = LinkCardView(frame: .zero)
+    let linkCard = LinkCardView(frame: .zero)
+    var quoteChromes: [QuoteChromeView] = []
+    var overviewPopover: NSPopover?
+    var imageOptionsPopover: NSPopover?
     private var relayoutQueued = false
     private var isRelayouting = false
     private var headingRuleSource: String?
@@ -41,10 +48,20 @@ final class PagedEditorView: NSView {
             guard let self else { return false }
             return self.codeHeaders.contains { $0.containsIcon(atWindowPoint: point) }
                 || self.pagesTables.contains { $0.editChromeContains(windowPoint: point) }
+                || self.linkCard.buttonContains(windowPoint: point)
+                || self.imageCard.buttonContains(windowPoint: point)
+                || (self.imageViews as [NSView] + self.renderedViews as [NSView]).contains { view in
+                    !view.isHidden && view.frame.contains(self.convert(point, from: nil))
+                }
         }
         linkCard.cardDelegate = self
         linkCard.isHidden = true
+        imageCard.cardDelegate = self
+        imageCard.isHidden = true
+        NotificationCenter.default.addObserver(self, selector: #selector(imageDidLoad), name: ImageStore.didLoad, object: nil)
     }
+
+    @objc private func imageDidLoad() { queueRelayout() }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
@@ -168,7 +185,7 @@ final class PagedEditorView: NSView {
             ensureLayout()
             let needed = contentPageCount(laidOutPages: pages)
             let nextSpacing = textView.mode == .wysiwyg
-                ? measureTableSpacing().merging(measureRenderedSpacing()) { $1 }
+                ? measureTableSpacing().merging(measureRenderedSpacing()) { $1 }.merging(measureImageSpacing()) { $1 }
                 : [:]
             if needed == pages, spacingMatches(spacing, nextSpacing) { break }
             pages = needed
@@ -395,44 +412,6 @@ final class PagedEditorView: NSView {
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
-    func refreshImages() {
-        imageOverlays.forEach { $0.removeFromSuperview() }
-        imageOverlays.removeAll()
-        guard textView.mode == .wysiwyg else { return }
-        var seen = Set<String>()
-        let spans = MarkdownSyntax.spans(in: textView.string)
-        for span in spans {
-            guard case .image(let path) = span.kind else { continue }
-            let key = "\(span.group.location):\(path)"
-            if seen.contains(key) { continue }
-            seen.insert(key)
-            let url: URL
-            if path.hasPrefix("/") {
-                url = URL(fileURLWithPath: path)
-            } else if let dir = documentDirectory {
-                url = dir.appendingPathComponent(path)
-            } else {
-                continue
-            }
-            guard let image = NSImage(contentsOf: url) else { continue }
-            let y = caretY(at: span.group.location)
-            let maxWidth = geometry.contentSize.width
-            let natural = image.size
-            let scale = min(1, maxWidth / max(natural.width, 1))
-            let size = CGSize(width: natural.width * scale, height: natural.height * scale)
-            let view = NSImageView(frame: CGRect(
-                x: textView.frame.minX,
-                y: textView.frame.minY + y + 18,
-                width: size.width,
-                height: size.height
-            ))
-            view.image = image
-            view.imageScaling = .scaleProportionallyUpOrDown
-            addSubview(view, positioned: .above, relativeTo: textView)
-            imageOverlays.append(view)
-        }
-    }
-
     func rectForUTF16Range(_ range: NSRange) -> CGRect {
         ensureLayout()
         let length = (textView.string as NSString).length
@@ -456,6 +435,8 @@ final class PagedEditorView: NSView {
     }
 
     func refreshCodeChrome() {
+        quoteChromes.forEach { $0.removeFromSuperview() }
+        quoteChromes.removeAll()
         codeBackgrounds.forEach { $0.removeFromSuperview() }
         codeHeaders.forEach { $0.removeFromSuperview() }
         codeBackgrounds.removeAll()
@@ -501,9 +482,11 @@ final class PagedEditorView: NSView {
             addCopyChip(
                 hangingFrom: first,
                 copyText: copy,
-                runScript: ShellRunner.isShell(block.language) ? copy : nil
+                runScript: ShellRunner.isRunnable(block.language) ? copy : nil,
+                runLanguage: block.language
             )
         }
+        let alerts = Dictionary(MarkdownSyntax.alerts(in: textView.string).map { ($0.group.location, $0) }) { a, _ in a }
         for quote in MarkdownSyntax.quotes(in: textView.string) {
             var rect = rectForUTF16Range(quote.group)
             guard rect.height > 4 else { continue }
@@ -520,16 +503,36 @@ final class PagedEditorView: NSView {
                 paddingX: padX,
                 paddingY: padY
             )
+            if textView.mode == .wysiwyg {
+                // GitHub left bar (coloured for alerts) and, for alerts, the icon + title row.
+                let alert = alerts[quote.group.location]
+                var titleRect: CGRect?
+                if let alert {
+                    var line = rectForUTF16Range(alert.marker)
+                    line.origin.y += origin.y
+                    titleRect = CGRect(x: origin.x + 18, y: line.minY, width: geometry.contentSize.width - 18, height: line.height)
+                }
+                for piece in pieces.isEmpty ? [rect] : pieces {
+                    let chrome = QuoteChromeView(frame: piece)
+                    chrome.alert = alert?.kind
+                    chrome.darkPaper = darkPaper
+                    chrome.fontSize = textView.editorSettings.fontSize
+                    chrome.barRect = CGRect(x: 2, y: 1, width: 3, height: max(0, piece.height - 2))
+                    chrome.titleRect = titleRect.flatMap { $0.intersects(piece) ? $0.offsetBy(dx: -piece.minX, dy: -piece.minY) : nil }
+                    addSubview(chrome, positioned: .below, relativeTo: textView)
+                    quoteChromes.append(chrome)
+                }
+            }
             let first = (pieces.isEmpty ? [rect] : pieces).first ?? rect
             addCopyChip(hangingFrom: first, copyText: quote.innerText, runScript: nil)
         }
     }
 
-    private func addCopyChip(hangingFrom block: CGRect, copyText: String, runScript: String?) {
+    private func addCopyChip(hangingFrom block: CGRect, copyText: String, runScript: String?, runLanguage: String? = nil) {
         let chip = CopyChipView(frame: CopyChipView.frame(hangingFrom: block, showsRun: runScript != nil))
         chip.configure(copyText: copyText, darkPaper: darkPaper, runScript: runScript)
         chip.onRun = { [weak self] script in
-            ShellRunner.run(script, workingDirectory: self?.documentDirectory)
+            ShellRunner.run(script, language: runLanguage, workingDirectory: self?.documentDirectory)
         }
         addSubview(chip, positioned: .above, relativeTo: textView)
         codeHeaders.append(chip)
@@ -712,10 +715,11 @@ final class PagedEditorView: NSView {
             pendingLinkCardFocus = false
             return
         }
+        linkCard.fieldFontSize = textView.editorSettings.fontSize
         linkCard.configure(url: link.url)
         let textRect = glyphRect(for: link.textRange)
         let origin = textView.frame.origin
-        let width = min(geometry.contentSize.width, 360)
+        let width = min(geometry.contentSize.width, 300)
         var x = origin.x + textRect.minX
         let y = origin.y + textRect.maxY + 4
         x = min(max(origin.x, x), origin.x + geometry.contentSize.width - width)
@@ -764,6 +768,8 @@ final class PagedEditorView: NSView {
                 startY: caretY(at: loc),
                 storageRows: PagesTableView.storageRows(for: block),
                 rowHeight: PagesTableView.rowHeight,
+                rowHeights: PagesTableView.layoutMetrics(block: block, maxWidth: max(40, geometry.contentSize.width - PagesTableView.rowBar),
+                                                         base: documentDirectory).rowHeights,
                 topPad: PagesTableView.topPad,
                 bottomPad: PagesTableView.bottomPad,
                 geometry: geometry
@@ -805,6 +811,7 @@ final class PagedEditorView: NSView {
                 startY: startY,
                 storageRows: table.storageRowsForFlow,
                 rowHeight: PagesTableView.rowHeight,
+                rowHeights: table.rowHeights,
                 topPad: PagesTableView.topPad,
                 bottomPad: PagesTableView.bottomPad,
                 geometry: geometry
@@ -887,6 +894,13 @@ final class PagedEditorView: NSView {
         commitFocusedTableCell()
         guard let cell = focusedTableCell(),
               let result = TableMutator.deleteRow(source: textView.string, cell: cell) else { return }
+        applyTableEdit(result)
+    }
+
+    func alignTableColumn(_ alignment: ColumnAlignment) {
+        commitFocusedTableCell()
+        guard let cell = focusedTableCell(),
+              let result = TableMutator.setAlignment(source: textView.string, cell: cell, alignment: alignment) else { return }
         applyTableEdit(result)
     }
 
@@ -1033,12 +1047,29 @@ final class PagedEditorView: NSView {
                 overlay.drawExported(intoPage: paper, paperOnCanvas: paperOnCanvas)
             }
             drawRenderedBlocks(intoPage: paper, paperOnCanvas: paperOnCanvas)
+            drawImages(intoPage: paper, paperOnCanvas: paperOnCanvas)
+            // Quote bars and alert titles (drawn after the text here; they never overlap it).
+            for chrome in quoteChromes {
+                let rect = CGRect(x: chrome.frame.minX - paperOnCanvas.minX, y: chrome.frame.minY - paperOnCanvas.minY,
+                                  width: chrome.frame.width, height: chrome.frame.height)
+                guard rect.intersects(paper) else { continue }
+                QuoteChromeView.draw(alert: chrome.alert, bar: chrome.barRect.offsetBy(dx: rect.minX, dy: rect.minY),
+                                     title: chrome.titleRect?.offsetBy(dx: rect.minX, dy: rect.minY),
+                                     fontSize: chrome.fontSize, darkPaper: darkPaper)
+            }
         }
     }
 }
 
-extension PagedEditorView: @MainActor LinkCardDelegate {
+extension PagedEditorView: LinkCardDelegate {
     func linkCard(_ view: LinkCardView, commitURL url: String) {
+        if view === imageCard {
+            if let location = imageCardLocation, !url.isEmpty,
+               MarkdownSyntax.image(at: location, in: textView.string)?.source != url {
+                setImageSource(at: location, to: url)
+            }
+            return
+        }
         guard let result = MarkdownEditing.setLinkURL(
             source: textView.string,
             location: textView.selectedRange().location,
@@ -1048,14 +1079,80 @@ extension PagedEditorView: @MainActor LinkCardDelegate {
     }
 
     func linkCardOpen(_ view: LinkCardView) {
-        Hyperlink.open(view.url, relativeTo: documentDirectory)
+        if view === imageCard {
+            if let url = resolvedImageURL(view.url) { NSWorkspace.shared.open(url) }
+            return
+        }
+        textView.openLink(view.url)
     }
 
     func linkCardCopy(_ view: LinkCardView) {
+        if view === imageCard { return imageCardCopy() }
         Hyperlink.copy(view.url)
     }
 
+    /// Folder button: pick a file and point the link at it (copy / original asked like images).
+    func linkCardChooseFile(_ view: LinkCardView) {
+        if view === imageCard { return imageCardChooseFile() }
+        let location = textView.selectedRange().location
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.prompt = "Link"
+        panel.message = "Choose the file this link should point to."
+        if let directory = documentDirectory { panel.directoryURL = directory }
+        guard panel.runModal() == .OK, let file = panel.url else { return }
+        let isImage = MarkdownTextView.imageExtensions.contains(file.pathExtension.lowercased())
+        FileReference.resolve(
+            file,
+            kind: isImage ? .image : .link,
+            documentDirectory: documentDirectory,
+            trackedRoot: textView.markdownDelegate?.trackedRoot,
+            window: window
+        ) { [weak self] path in
+            guard let self, let path,
+                  let result = MarkdownEditing.setLinkURL(source: self.textView.string, location: location, url: path) else { return }
+            self.textView.applyEdit(result)
+            self.refreshLinkCard()
+        }
+    }
+
+    func linkCardOverview(_ view: LinkCardView, from button: NSView) {
+        if view === imageCard { return showImageOptions(from: button) }
+        let location = textView.selectedRange().location
+        let controller = DocumentOverviewViewController(
+            headings: MarkdownSyntax.headingAnchors(in: textView.string),
+            files: documentDirectory.map { DocumentOverviewViewController.linkableFiles(in: $0, excluding: textView.markdownDelegate?.documentFileURL) } ?? [],
+            navigation: false
+        )
+        let popover = NSPopover()
+        popover.contentViewController = controller
+        popover.behavior = .transient
+        popover.contentSize = DocumentOverviewViewController.size
+        controller.popover = popover
+        controller.onPick = { [weak self, weak popover] item in
+            popover?.performClose(nil)
+            guard let self else { return }
+            let target: String
+            switch item {
+            case .heading(let anchor): target = "#" + anchor.slug
+            case .file(let url, _):
+                target = self.documentDirectory.map { FileReference.relativeMarkdownPath(of: url, from: $0) } ?? url.path
+            case .section: return
+            }
+            guard let result = MarkdownEditing.setLinkURL(source: self.textView.string, location: location, url: target) else { return }
+            self.textView.applyEdit(result)
+            self.refreshLinkCard()
+        }
+        overviewPopover = popover
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
+    }
+
     func linkCardRemove(_ view: LinkCardView) {
+        if view === imageCard {
+            if let location = imageCardLocation { removeImage(at: location) }
+            return
+        }
         guard let result = MarkdownEditing.removeLink(
             source: textView.string,
             location: textView.selectedRange().location
@@ -1065,7 +1162,7 @@ extension PagedEditorView: @MainActor LinkCardDelegate {
     }
 }
 
-extension PagedEditorView: @MainActor PagesTableDelegate {
+extension PagedEditorView: PagesTableDelegate {
     func pagesTable(_ view: PagesTableView, commit row: Int, column: Int, text: String) {
         let loc = view.block.range.location
         let current = row < view.block.rows.count && column < view.block.rows[row].count
@@ -1120,6 +1217,21 @@ extension PagedEditorView: @MainActor PagesTableDelegate {
         let cell = TableMutator.CellRef(block: view.block, row: from, column: view.selectedColumn)
         guard let result = TableMutator.moveRow(source: textView.string, cell: cell, to: to) else { return }
         applyTableEdit(result)
+    }
+
+    /// A picture in a cell: commit the cell, find that image in the document, open the image card
+    /// on the cell (same card as for pictures in the text).
+    func pagesTable(_ view: PagesTableView, clickedImage index: Int, row: Int, column: Int, cellRect: CGRect) {
+        let tableLocation = view.block.range.location
+        commitFocusedTableCell()
+        tableFocus = nil
+        window?.makeFirstResponder(textView)
+        relayout()
+        guard let block = TableMutator.block(at: tableLocation, in: textView.string),
+              let cell = TableMutator.cellRange(in: textView.string, block: block, row: row, column: column) else { return }
+        let images = MarkdownSyntax.tableImages(in: textView.string).filter { NSLocationInRange($0.group.location, cell) }
+        guard index < images.count else { return }
+        showImageCard(location: images[index].group.location, source: images[index].source, anchor: cellRect)
     }
 
     func pagesTable(_ view: PagesTableView, moveColumn from: Int, to: Int) {

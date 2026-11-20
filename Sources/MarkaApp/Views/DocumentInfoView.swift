@@ -22,7 +22,10 @@ struct DocumentInfo {
 final class PageNumberButton: NSButton {
     convenience init(target: AnyObject?, action: Selector) {
         self.init(title: "1", target: target, action: action)
-        bezelStyle = .toolbar
+        // Bordered like Bold / Italic / Strike, so it groups with the Content button next to it.
+        bezelStyle = .texturedRounded
+        isBordered = true
+        heightAnchor.constraint(equalToConstant: 24).isActive = true
         font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
         refusesFirstResponder = true
         setContentHuggingPriority(.required, for: .horizontal)
@@ -41,6 +44,8 @@ final class DocumentInfoViewController: NSViewController, NSTextFieldDelegate {
     static let contentWidth: CGFloat = 320
     static let sideInset: CGFloat = 16
     var onGoToPage: ((Int) -> Void)?
+    /// The overview icon: headings and files for quick navigation.
+    var onOverview: (() -> Void)?
 
     private let pageField = NSTextField()
     private let pageStepper = NSStepper()
@@ -53,6 +58,7 @@ final class DocumentInfoViewController: NSViewController, NSTextFieldDelegate {
     private var values: [String: NSTextField] = [:]
     private let pathLabel = NSTextField(wrappingLabelWithString: "")
     private let revealButton = NSButton(title: "Show in Finder", target: nil, action: nil)
+    private(set) var overviewButton: LinkCardButton?
     private let copyButton = NSButton(title: "Copy Path", target: nil, action: nil)
     private var info: DocumentInfo?
     private var selectionRow: NSGridRow?
@@ -85,9 +91,23 @@ final class DocumentInfoViewController: NSViewController, NSTextFieldDelegate {
         pageStepper.target = self
         pageStepper.action = #selector(stepperChanged)
         pageCountLabel.textColor = .secondaryLabelColor
-        let pageRow = NSStackView(views: [pageTitle, pageField, pageStepper, pageCountLabel])
+        // Same hover button as the link card's icons (rounded fill, pointing hand), popover-sized.
+        let overview = LinkCardButton(
+            image: NSImage(systemSymbolName: "list.bullet.rectangle", accessibilityDescription: "Go to a heading or file")?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)) ?? NSImage(),
+            tip: "Go to a heading or file…"
+        )
+        overview.target = self
+        overview.action = #selector(overviewTapped)
+        NSLayoutConstraint.activate([
+            overview.widthAnchor.constraint(equalToConstant: 28),
+            overview.heightAnchor.constraint(equalToConstant: 28)
+        ])
+        overviewButton = overview
+        let pageRow = NSStackView(views: [pageTitle, pageField, pageStepper, pageCountLabel, NSView(), overview])
         pageRow.spacing = 6
         pageRow.alignment = .centerY
+        pageRow.widthAnchor.constraint(equalToConstant: Self.contentWidth - Self.sideInset * 2).isActive = true
         pageDetailLabel.textColor = .secondaryLabelColor
         pageDetailLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
 
@@ -276,6 +296,8 @@ final class DocumentInfoViewController: NSViewController, NSTextFieldDelegate {
         pageStepper.integerValue = clamped
         onGoToPage?(clamped)
     }
+
+    @objc private func overviewTapped() { onOverview?() }
 
     @objc private func revealInFinder() {
         guard let url = info?.fileURL else { return }

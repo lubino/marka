@@ -29,8 +29,8 @@ final class CodeBlockBackgroundView: NSView {
             label.draw(
                 at: CGPoint(x: shape.minX + 12, y: shape.minY + 8),
                 withAttributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .medium),
-                    .foregroundColor: NSColor.secondaryLabelColor
+                    .font: Theme.codeLabelFont,
+                    .foregroundColor: Theme.paperSecondaryText(darkPaper: darkPaper)
                 ]
             )
         }

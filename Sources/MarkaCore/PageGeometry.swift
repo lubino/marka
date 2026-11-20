@@ -198,12 +198,15 @@ public enum PageLayout {
             public var y: CGFloat
             public var page: Int
             public var isRepeatedHeader: Bool
+            /// This row's height (rows with pictures are taller).
+            public var height: CGFloat
 
-            public init(storageRow: Int, y: CGFloat, page: Int, isRepeatedHeader: Bool) {
+            public init(storageRow: Int, y: CGFloat, page: Int, isRepeatedHeader: Bool, height: CGFloat = 28) {
                 self.storageRow = storageRow
                 self.y = y
                 self.page = page
                 self.isRepeatedHeader = isRepeatedHeader
+                self.height = height
             }
         }
 
@@ -236,10 +239,15 @@ public enum PageLayout {
         startY: CGFloat,
         storageRows: [Int],
         rowHeight: CGFloat,
+        rowHeights: [Int: CGFloat] = [:],
         topPad: CGFloat,
         bottomPad: CGFloat,
         geometry: PageGeometry
     ) -> TableFlow {
+        /// Per storage row (pictures make rows taller); never more than a page's content height.
+        func height(_ storage: Int) -> CGFloat {
+            min(max(rowHeight, rowHeights[storage] ?? rowHeight), geometry.contentSize.height - topPad - 1)
+        }
         func page(of y: CGFloat) -> Int { pageIndex(forTextY: y, geometry: geometry) }
         func bottom(of y: CGFloat) -> CGFloat { contentBottom(pageIndex: page(of: y), geometry: geometry) }
         func nextTop(of y: CGFloat) -> CGFloat { contentTop(pageIndex: page(of: y) + 1, geometry: geometry) }
@@ -254,17 +262,18 @@ public enum PageLayout {
             }
         }
 
-        ensure(topPad + rowHeight)
+        let header = storageRows.first ?? 0
+        ensure(topPad + height(header))
         y += topPad
         content += topPad
 
         var rows: [TableFlow.Row] = []
-        let header = storageRows.first ?? 0
         func place(_ storage: Int, repeated: Bool) {
-            ensure(rowHeight)
-            rows.append(TableFlow.Row(storageRow: storage, y: y, page: page(of: y), isRepeatedHeader: repeated))
-            y += rowHeight
-            content += rowHeight
+            let h = height(storage)
+            ensure(h)
+            rows.append(TableFlow.Row(storageRow: storage, y: y, page: page(of: y), isRepeatedHeader: repeated, height: h))
+            y += h
+            content += h
         }
 
         for (index, storage) in storageRows.enumerated() {
@@ -272,9 +281,9 @@ public enum PageLayout {
                 place(storage, repeated: false)
                 continue
             }
-            if bottom(of: y) - y < rowHeight - 0.5 {
+            if bottom(of: y) - y < height(storage) - 0.5 {
                 y = nextTop(of: y)
-                ensure(topPad + rowHeight)
+                ensure(topPad + height(header) + height(storage))
                 if topPad > 0 {
                     y += topPad
                     content += topPad
@@ -306,7 +315,7 @@ public enum PageLayout {
         return groups.enumerated().map { index, group in
             let rows = group.1
             let minY = (rows.first?.y ?? flow.startY) - topPad
-            var maxY = (rows.last?.y ?? minY) + rowHeight
+            var maxY = (rows.last?.y ?? minY) + (rows.last?.height ?? rowHeight)
             if index == groups.count - 1 {
                 maxY += bottomPad
             }

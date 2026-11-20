@@ -1,3 +1,4 @@
+import ObjectiveC
 import AppKit
 import Darwin
 
@@ -6,6 +7,7 @@ public enum CrashReporter {
     private static let pathCapacity = 1024
     nonisolated(unsafe) private static var logPath = [CChar](repeating: 0, count: pathCapacity)
     nonisolated(unsafe) private static var installed = false
+    nonisolated(unsafe) static var previousObjCHandler: objc_uncaught_exception_handler?
 
     public static var logsDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -23,6 +25,13 @@ public enum CrashReporter {
         refreshLogPath()
         NSSetUncaughtExceptionHandler { exception in
             CrashReporter.record(exception: exception)
+        }
+        // Exceptions thrown inside system drawing (CoreText, AppKit) can end in std::terminate
+        // without reaching Foundation's handler — the log then only said "SIGABRT". The runtime
+        // handler sees them all; the previous handler still runs afterwards.
+        previousObjCHandler = objc_setUncaughtExceptionHandler { object in
+            if let exception = object as? NSException { CrashReporter.record(exception: exception) }
+            CrashReporter.previousObjCHandler?(object)
         }
         let handled: [Int32] = [SIGABRT, SIGILL, SIGSEGV, SIGFPE, SIGBUS, SIGTRAP]
         for sig in handled {

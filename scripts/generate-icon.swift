@@ -10,11 +10,11 @@ import CoreText
 //   compiles into a Liquid Glass Assets.car on macOS 26+.
 // * `--preview`: a 1024 px PNG of the flat render.
 //
-// Design: a thick rounded slab of clear glass — bright rim, a diagonal
-// reflection, a soft caustic at the bottom. On it "Marka.MD" and rows of bars that read as
-// Markdown (a short heading row, paragraph lines, a dashed list). Text and bars are *not*
-// translucent: solid #505E76 with a glossy, slightly raised finish. Two bars are clear glass
-// accents. Geometry: 1024 × 1024 canvas, y down.
+// Design: a thick rounded slab of clear glass — bright rim, a diagonal reflection, a soft
+// caustic at the bottom. On it, flat and crisp (no shadow, no gloss, so it stays sharp when
+// small): a big "Marka" in Arial Bold across the top, two full-width bars, then two shorter bars
+// on the left with "MD" beside them at the bottom right. Solid #505E76.
+// Geometry: 1024 × 1024 canvas, y down.
 
 let args = CommandLine.arguments
 guard args.count >= 2 else {
@@ -30,7 +30,7 @@ let previewPath = argument("--preview")
 
 /// The words on the slab.
 let wordmark = "Marka"
-let suffix = ".MD"
+let suffix = "MD"
 
 // MARK: - Palette
 
@@ -56,13 +56,15 @@ let rimDark = RGB(0x8F9BAB)
 
 let canvas: CGFloat = 1024
 let left: CGFloat = 127
-let barHeight: CGFloat = 25
+let right: CGFloat = 897
+let barHeight: CGFloat = 50
 
-/// "Marka.MD" in bold, as glyph outlines (no font needed at runtime).
-func wordmarkPath() -> CGPath {
-    // "Marka" and ".MD" share one size; the line is scaled to fit the text column below.
-    let font = NSFont.systemFont(ofSize: 194, weight: .bold)
-    let text = NSAttributedString(string: wordmark + suffix, attributes: [.font: font, .kern: -3])
+/// Arial Bold (the design's font; the system bold if Arial is missing).
+let iconFont = NSFont(name: "Arial-BoldMT", size: 200) ?? NSFont.systemFont(ofSize: 200, weight: .bold)
+
+/// `text` as glyph outlines in y-up glyph space (no font needed at runtime).
+func glyphOutlines(_ string: String, kern: CGFloat = 0) -> CGPath {
+    let text = NSAttributedString(string: string, attributes: [.font: iconFont, .kern: kern])
     let line = CTLineCreateWithAttributedString(text)
     let glyphs = CGMutablePath()
     for run in CTLineGetGlyphRuns(line) as! [CTRun] {
@@ -78,13 +80,34 @@ func wordmarkPath() -> CGPath {
             glyphs.addPath(glyph, transform: CGAffineTransform(translationX: positions[i].x, y: positions[i].y))
         }
     }
-    // Fit into the text column (x 127…887), baseline at y 408; flip from y-up glyph space.
+    return glyphs
+}
+
+/// Places y-up glyph outlines so their ink fills `box` (y down): `fitWidth` scales the ink to the
+/// box's width (top-aligned), otherwise to its height (right-aligned).
+func place(_ glyphs: CGPath, in box: CGRect, fitWidth: Bool) -> CGPath {
     let ink = glyphs.boundingBoxOfPath
-    let scale = min(1, 760 / ink.width)
-    var t = CGAffineTransform(translationX: left, y: 408)
+    let scale = fitWidth ? box.width / ink.width : box.height / ink.height
+    let x = fitWidth ? box.minX : box.maxX - ink.width * scale
+    // Ink top (glyph maxY) goes to box.minY.
+    var t = CGAffineTransform(translationX: x, y: box.minY)
     t = t.scaledBy(x: scale, y: -scale)
-    t = t.translatedBy(x: -ink.minX, y: 0)
+    t = t.translatedBy(x: -ink.minX, y: -ink.maxY)
     return glyphs.copy(using: &t) ?? glyphs
+}
+
+/// Bar rows (centres): two full-width, then two short ones beside "MD".
+let barRows: [CGFloat] = [500, 594, 708, 812]
+let shortBarEnd: CGFloat = 470
+
+/// "Marka" across the top and "MD" at the bottom right, as one shape.
+func wordmarkPath() -> CGPath {
+    let path = CGMutablePath()
+    path.addPath(place(glyphOutlines(wordmark, kern: -2), in: CGRect(x: left, y: 190, width: right - left, height: 0), fitWidth: true))
+    // "MD": exactly as tall as the two short bars it sits beside.
+    let top = barRows[2] - barHeight / 2, bottom = barRows[3] + barHeight / 2
+    path.addPath(place(glyphOutlines(suffix), in: CGRect(x: shortBarEnd + 40, y: top, width: right - shortBarEnd - 40, height: bottom - top), fitWidth: false))
+    return path
 }
 
 struct Bar {
@@ -95,27 +118,13 @@ struct Bar {
     var path: CGPath { CGPath(roundedRect: rect, cornerWidth: height / 2, cornerHeight: height / 2, transform: nil) }
 }
 
-/// Rows of "structured text": heading row with a separator dot, paragraph lines, a dashed list.
-let bars: [Bar] = {
-    let dash: CGFloat = 8
-    var b: [Bar] = []
-    func row(_ y: CGFloat, _ spans: [(CGFloat, CGFloat)], clear: Set<Int> = []) {
-        for (i, span) in spans.enumerated() {
-            b.append(Bar(x0: span.0, x1: span.1, centerY: y, clearGlass: clear.contains(i)))
-        }
-    }
-    row(510, [(127, 326), (348, 371), (401, 530)])
-    row(562, [(127, 886)])
-    row(615, [(127, 588), (608, 696), (715, 838)])
-    row(667, [(127, 596), (614, 821)], clear: [1])
-    b.append(Bar(x0: 127, x1: 167, centerY: 721, height: dash))
-    row(721, [(193, 626)])
-    b.append(Bar(x0: 127, x1: 167, centerY: 773, height: dash))
-    row(773, [(193, 628), (645, 742)], clear: [1])
-    row(824, [(127, 176), (193, 389)])
-    b.append(Bar(x0: 127, x1: 176, centerY: 872, height: dash))
-    return b
-}()
+/// Few, thick bars: two full lines of text, then two shorter ones next to "MD".
+let bars: [Bar] = [
+    Bar(x0: left, x1: right, centerY: barRows[0]),
+    Bar(x0: left, x1: right, centerY: barRows[1]),
+    Bar(x0: left, x1: shortBarEnd, centerY: barRows[2]),
+    Bar(x0: left, x1: shortBarEnd, centerY: barRows[3])
+]
 
 func combined(_ paths: [CGPath]) -> CGPath {
     let p = CGMutablePath()
@@ -124,7 +133,6 @@ func combined(_ paths: [CGPath]) -> CGPath {
 }
 
 let solidBars = combined(bars.filter { !$0.clearGlass }.map(\.path))
-let glassBars = combined(bars.filter(\.clearGlass).map(\.path))
 let wordmarkShape = wordmarkPath()
 
 // MARK: - Flat render (preview PNG + .icns fallback)
@@ -198,52 +206,17 @@ func render(pixelSize: Int) -> NSBitmapImageRep {
     ctx.saveGState()
     ctx.translateBy(x: body.minX, y: body.minY)
     ctx.scaleBy(x: body.width / canvas, y: body.height / canvas)
-    let unit = px * body.width / canvas   // design unit → device px (for shadows)
 
-    /// Solid slate with a glossy top and a deeper lower edge.
+    /// Flat solid slate — crisp at every size (no shadow, no gloss).
     func shiny(_ path: CGPath, perShape rects: [CGRect], edgeHighlight: Bool) {
-        ctx.saveGState()
-        ctx.setShadow(offset: CGSize(width: 0, height: -7 * unit), blur: 12 * unit, color: CGColor(gray: 0.05, alpha: 0.3))
+        ctx.setShouldAntialias(true)
         ctx.addPath(path)
         ctx.setFillColor(slate.cg())
         ctx.fillPath()
-        ctx.restoreGState()
-        ctx.saveGState()
-        ctx.addPath(path)
-        ctx.clip()
-        for rect in rects {
-            ctx.drawLinearGradient(gradient([CGColor(gray: 1, alpha: 0.42), CGColor(gray: 1, alpha: 0.0), slateDeep.cg(0.0), slateDeep.cg(0.55)], [0, 0.48, 0.7, 1]),
-                                   start: CGPoint(x: rect.midX, y: rect.minY), end: CGPoint(x: rect.midX, y: rect.maxY), options: [])
-        }
-        ctx.restoreGState()
-        // Thin specular line along the top edge (bars only: system glyphs have overlapping
-        // contours that a stroke would trace inside the letters).
-        guard edgeHighlight else { return }
-        ctx.saveGState()
-        ctx.addPath(path)
-        ctx.clip()
-        ctx.translateBy(x: 0, y: 2)
-        ctx.addPath(path)
-        ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.35))
-        ctx.setLineWidth(2)
-        ctx.strokePath()
-        ctx.restoreGState()
     }
-
     shiny(wordmarkShape, perShape: [wordmarkShape.boundingBoxOfPath], edgeHighlight: false)
     shiny(solidBars, perShape: bars.filter { !$0.clearGlass }.map(\.rect), edgeHighlight: true)
 
-    // Clear glass accent bars.
-    ctx.saveGState()
-    ctx.setShadow(offset: CGSize(width: 0, height: -4 * unit), blur: 8 * unit, color: CGColor(gray: 0, alpha: 0.18))
-    ctx.addPath(glassBars)
-    ctx.setFillColor(CGColor(gray: 1, alpha: 0.42))
-    ctx.fillPath()
-    ctx.restoreGState()
-    ctx.addPath(glassBars)
-    ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.9))
-    ctx.setLineWidth(2)
-    ctx.strokePath()
     ctx.restoreGState()
 
     // Diagonal reflection across the face of the slab.
@@ -292,8 +265,7 @@ func writeIconBundle(at path: String) throws {
     try fm.createDirectory(at: assets, withIntermediateDirectories: true)
     let layers: [(name: String, path: CGPath, color: String)] = [
         ("wordmark", wordmarkShape, slate.svg),
-        ("bars", solidBars, slate.svg),
-        ("glass-bars", glassBars, "#FFFFFF")
+        ("bars", solidBars, slate.svg)
     ]
     for layer in layers {
         let svg = """
@@ -312,11 +284,11 @@ func writeIconBundle(at path: String) throws {
             {
               "name" : "\(name)",
               "lighting" : "individual",
-              "specular" : true,
-              "shadow" : { "kind" : "layer-color", "opacity" : 0.5 },
+              "specular" : false,
+              "shadow" : { "kind" : "none", "opacity" : 0 },
               "translucency" : { "enabled" : \(translucent), "value" : 0.5 },
               "layers" : [
-                { "name" : "\(layer)", "image-name" : "\(layer).svg", "glass" : true, "opacity" : \(opacity) }
+                { "name" : "\(layer)", "image-name" : "\(layer).svg", "glass" : false, "opacity" : \(opacity) }
               ]
             }
         """
@@ -331,7 +303,6 @@ func writeIconBundle(at path: String) throws {
       },
       "groups" : [
     \(group("Wordmark", "wordmark", translucent: false, opacity: 1)),
-    \(group("Glass bars", "glass-bars", translucent: true, opacity: 0.6)),
     \(group("Bars", "bars", translucent: false, opacity: 1))
       ],
       "supported-platforms" : {

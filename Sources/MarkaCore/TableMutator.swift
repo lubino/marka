@@ -10,6 +10,10 @@ public enum ColumnPlacement: Equatable, Sendable {
     case right
 }
 
+public enum ColumnAlignment: Equatable, Sendable {
+    case none, left, center, right
+}
+
 public enum TableMutator {
     public struct Block: Equatable, Sendable {
         public var range: NSRange
@@ -20,6 +24,21 @@ public enum TableMutator {
 
         public var columnCount: Int { rows.first?.count ?? 0 }
         public var dataRowCount: Int { max(0, rows.count - 2) }
+
+        /// GFM column alignment from the delimiter row (`:--` left, `:-:` centre, `--:` right).
+        public var alignments: [ColumnAlignment] {
+            guard rows.count > 1 else { return Array(repeating: .none, count: columnCount) }
+            return (0..<columnCount).map { c in
+                let raw = c < rows[1].count ? rows[1][c].trimmingCharacters(in: .whitespaces) : ""
+                let left = raw.hasPrefix(":"), right = raw.hasSuffix(":") && raw.count > 1
+                switch (left, right) {
+                case (true, true): return .center
+                case (true, false): return .left
+                case (false, true): return .right
+                default: return .none
+                }
+            }
+        }
 
         public func isSeparatorRow(_ index: Int) -> Bool { index == 1 }
         public func isHeaderRow(_ index: Int) -> Bool { index == 0 }
@@ -149,6 +168,47 @@ public enum TableMutator {
         return replace(source: source, block: next, focusRow: max(focus, 2), focusColumn: min(cell.column, max(0, next.columnCount - 1)))
     }
 
+    /// Source range of a cell's text (trimmed) in the document; `row` is the storage row.
+    public static func cellRange(in source: String, block: Block, row: Int, column: Int) -> NSRange? {
+        guard row >= 0, row < block.lineRanges.count else { return nil }
+        let ns = source as NSString
+        let line = block.lineRanges[row]
+        let text = ns.substring(with: line) as NSString
+        // Cell boundaries: unescaped pipes, like `MarkdownSyntax.splitPipes`.
+        var pipes: [Int] = []
+        var i = 0
+        while i < text.length {
+            let ch = text.character(at: i)
+            if ch == 92, i + 1 < text.length, text.character(at: i + 1) == 124 { i += 2; continue }
+            if ch == 124 { pipes.append(i) }
+            i += 1
+        }
+        let leading = text.substring(to: min(text.length, (pipes.first ?? text.length))).trimmingCharacters(in: .whitespaces).isEmpty && !pipes.isEmpty
+        var bounds = (leading ? [] : [-1]) + pipes
+        let trailing = text.substring(from: (pipes.last ?? 0) + 1).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && pipes.count > 1
+        if !trailing { bounds.append(text.length) }
+        guard column + 1 < bounds.count else { return nil }
+        var start = bounds[column] + 1, end = bounds[column + 1]
+        while start < end, text.character(at: start) == 32 || text.character(at: start) == 9 { start += 1 }
+        while end > start, text.character(at: end - 1) == 32 || text.character(at: end - 1) == 9 { end -= 1 }
+        return NSRange(location: line.location + start, length: end - start)
+    }
+
+    /// Sets a column's GFM alignment (the delimiter row: `---`, `:--`, `:-:`, `--:`).
+    public static func setAlignment(source: String, cell: CellRef, alignment: ColumnAlignment) -> EditResult? {
+        guard var block = block(at: cell.block.range.location, in: source), block.rows.count > 1,
+              cell.column >= 0, cell.column < block.columnCount else { return nil }
+        var separator = padded(block.rows[1], to: block.columnCount)
+        switch alignment {
+        case .none: separator[cell.column] = "---"
+        case .left: separator[cell.column] = ":--"
+        case .center: separator[cell.column] = ":-:"
+        case .right: separator[cell.column] = "--:"
+        }
+        block.rows[1] = separator
+        return replace(source: source, block: block, focusRow: cell.row, focusColumn: cell.column)
+    }
+
     public static func deleteColumn(source: String, location: Int) -> EditResult? {
         guard let cell = cell(at: location, in: source) else { return nil }
         return deleteColumn(source: source, cell: cell)
@@ -229,7 +289,7 @@ public enum TableMutator {
         guard row != 1, row >= 0, row < block.rows.count else { return nil }
         var line = padded(block.rows[row], to: block.columnCount)
         guard column >= 0, column < line.count else { return nil }
-        line[column] = value.isEmpty ? " " : value
+        line[column] = value.isEmpty ? " " : escapePipes(value)
         block.rows[row] = line
         return replace(source: source, block: block, focusRow: row, focusColumn: column)
     }
@@ -334,9 +394,17 @@ public enum TableMutator {
     }
 
     static func parseRow(_ line: String) -> [String] {
-        var s = line.trimmingCharacters(in: .whitespaces)
-        if s.hasPrefix("|") { s.removeFirst() }
-        if s.hasSuffix("|") { s.removeLast() }
-        return s.split(separator: "|", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+        MarkdownSyntax.splitPipes(line).map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    /// A cell value as stored: a typed `|` becomes `\|` so it does not split the cell.
+    public static func escapePipes(_ value: String) -> String {
+        var result = ""
+        var previous: Character?
+        for ch in value {
+            if ch == "|", previous != "\\" { result += "\\|" } else { result.append(ch) }
+            previous = ch
+        }
+        return result
     }
 }

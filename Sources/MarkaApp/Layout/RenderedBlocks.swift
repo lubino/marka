@@ -162,6 +162,8 @@ extension PagedEditorView {
         popover.behavior = .transient
         popover.delegate = editor
         editor.popover = popover
+        _ = editor.view
+        popover.contentSize = editor.preferredContentSize
         popover.show(relativeTo: view.bounds, of: view, preferredEdge: .maxY)
         renderedEditor = editor
     }
@@ -244,12 +246,23 @@ final class RenderedSourceEditor: NSViewController, NSTextViewDelegate, NSPopove
         hint.textColor = .secondaryLabelColor
         hint.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         let buttons = NSStackView(views: [hint, NSView(), done])
+        buttons.alignment = .centerY
+        doneButton = done
         let stack = NSStackView(views: [title, scroll, preview, buttons])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 12, right: 14)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        // A popover sizes a root NSStackView without its edgeInsets (Done ended up on the popover's
+        // edge): a plain container with explicit, equal insets on every side.
+        let container = NSView()
+        container.addSubview(stack)
+        let inset: CGFloat = 16
         NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: inset - 2),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -inset),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: inset),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -inset),
             scroll.widthAnchor.constraint(equalToConstant: 420),
             scroll.heightAnchor.constraint(equalToConstant: mermaid ? 150 : 80),
             preview.widthAnchor.constraint(equalToConstant: 420),
@@ -257,8 +270,11 @@ final class RenderedSourceEditor: NSViewController, NSTextViewDelegate, NSPopove
             preview.heightAnchor.constraint(greaterThanOrEqualToConstant: 40),
             buttons.widthAnchor.constraint(equalToConstant: 420)
         ])
-        view = stack
+        view = container
+        preferredContentSize = container.fittingSize
     }
+
+    private var doneButton: NSButton?
 
     override func viewDidAppear() {
         super.viewDidAppear()
@@ -282,4 +298,10 @@ final class RenderedSourceEditor: NSViewController, NSTextViewDelegate, NSPopove
     // Testing
     func testSetSource(_ text: String) { _ = view; textView.string = text; textDidChange(Notification(name: NSText.didChangeNotification)) }
     var testPreviewSize: CGSize { preview.image?.size ?? .zero }
+    /// Done button frame in the root view, and the root bounds (padding checks).
+    var testDoneFrame: (done: NSRect, bounds: NSRect) {
+        view.layoutSubtreeIfNeeded()
+        guard let done = doneButton else { return (.zero, view.bounds) }
+        return (done.superview!.convert(done.alignmentRect(forFrame: done.frame), to: view), view.bounds)
+    }
 }

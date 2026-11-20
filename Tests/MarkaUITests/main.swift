@@ -961,7 +961,7 @@ enum MarkaUITests {
         expect(harness.codePopupEnabled, "Code popup stays enabled so inline code can unwrap")
 
         harness.loadMarkdown("```python\nprint(1)\n```\n")
-        expect(harness.firstChipShowsRun == false, "python fence has copy only")
+        expect(harness.firstChipShowsRun, "python fence also has the Run in Terminal icon")
         harness.loadMarkdown("```bash\necho hi\n```\n")
         expect(harness.firstChipShowsRun, "bash fence has a Terminal chip")
         expect(harness.copyPopupIsTopRight, "copy chip stays top-right next to the run chip")
@@ -1025,6 +1025,600 @@ enum MarkaUITests {
             try FileManager.default.removeItem(at: CrashReporter.pendingFlagURL)
         } catch {
             expect(false, "crash log write failed: \(error)")
+        }
+
+        // LaTeX / Mermaid source popover: same padding around the buttons on every side.
+        for mermaid in [false, true] {
+            let frames = PublishPopoverHarness.renderedEditorDoneFrame(mermaid: mermaid)
+            let right = frames.bounds.maxX - frames.done.maxX
+            let bottom = frames.done.minY - frames.bounds.minY
+            expect(right >= 15 && right <= 17, "source popover: Done keeps 16 pt from the right edge, got \(right)")
+            expect(bottom >= 15 && bottom <= 17, "source popover: Done keeps 16 pt from the bottom edge, got \(bottom)")
+        }
+
+        // Insert menu: Table / Code Block | Equation / Matrix | four Mermaid kinds; galleries insert blocks.
+        do {
+            let menus = InsertHarness.menuTitles()
+            expect(menus.insert == ["Table", "Image…", "Code Block", "-", "Equation", "Matrix", "-", "Flowchart", "Left-to-right flow", "Sequence Diagram", "Pie chart",
+                                  "-", "Note", "Tip", "Important", "Warning", "Caution"],
+                   "Insert menu items and separators, got \(menus.insert)")
+            expect(!menus.format.contains("Insert Table"), "Insert Table moved out of Format")
+            expect(menus.format.contains("Code Block"), "Format keeps Code Block")
+            for kind in InsertKind.allCases {
+                let sizes = InsertHarness.previewSizes(kind)
+                expect(sizes.allSatisfy { $0.width > 4 && $0.height > 4 }, "\(kind.title) gallery previews render, got \(sizes)")
+                if let dir = ProcessInfo.processInfo.environment["MARKA_PUBLISH_SNAPSHOT_DIR"] {
+                    InsertHarness.snapshot(kind, to: "\(dir)/insert-\(kind.rawValue).png")
+                }
+            }
+            let insert = EditorWindowHarness()
+            insert.loadMarkdown("Intro\n")
+            insert.select(NSRange(location: 6, length: 0))
+            insert.insertTemplate(.equation, 0)
+            insert.insertTemplate(.flowchart, 0)
+            insert.insertTemplate(.pie, 0)
+            expect(insert.markdown.contains("```math\nx = \\frac") && insert.markdown.contains("```mermaid\nflowchart TD") && insert.markdown.contains("pie title"),
+                   "templates inserted in order, got \(insert.markdown)")
+            expect(insert.renderedFrames.count == 3, "three inserted blocks are drawn, got \(insert.renderedFrames.count)")
+            insert.insertTemplate(.codeBlock, 2)
+            expect(insert.markdown.hasSuffix("```python\n\n```"), "code tile inserts an empty Python fence")
+            insert.close()
+        }
+
+        // Newer published version prompt texts.
+        do {
+            let update = PublishedUpdate(root: URL(fileURLWithPath: "/tmp/r"), path: "docs/page.md", upstream: "origin/main", commits: [
+                GitCommit(hash: "a", author: "Ada", date: Date(), subject: "Fix typo"),
+                GitCommit(hash: "b", author: "Bob", date: Date().addingTimeInterval(-3600), subject: "Older")
+            ])
+            let texts = InsertHarness.publishedUpdateTexts(update)
+            expect(texts.title == "A newer version of “page.md” has been published", "update prompt title, got \(texts.title)")
+            expect(texts.text.contains("Ada published “Fix typo”") && texts.text.contains("2 newer changes") && texts.text.hasSuffix("from origin/main?"),
+                   "update prompt text, got \(texts.text)")
+        }
+
+        // Link card: one row — address field, then Choose File / Open / Copy / Remove icons.
+        do {
+            let sizes = FileReferenceHarness.linkCardSizes()
+            expect(sizes.button == sizes.codeIcon && sizes.symbolPoints == 10, "card icons are code-block size (22 pt, 10 pt symbols)")
+            expect(sizes.fieldFont == 10, "card field uses the document's body size, got \(sizes.fieldFont)")
+            let layout = FileReferenceHarness.linkCardLayout(width: 300, url: "file.md")
+            expect(layout.buttons.count == 4 && layout.buttons.allSatisfy { abs($0.midY - layout.bounds.midY) < 1 },
+                   "link card icons sit on one row, vertically centred")
+            expect(abs(layout.field.midY - layout.bounds.midY) < 1, "address field centred in the card")
+            expect(layout.buttons.allSatisfy { $0.maxX <= layout.bounds.maxX - 4 && $0.minY >= 3 && $0.maxY <= layout.bounds.maxY - 3 },
+                   "icons keep the card padding")
+            expect(layout.field.maxX < layout.buttons[0].minX - 4, "field ends before the icons")
+            expect(zip(layout.buttons, layout.buttons.dropFirst()).allSatisfy { $0.maxX <= $1.minX }, "icons do not overlap")
+            expect(layout.tips[0].contains("Choose") && layout.tips[1].contains("Open") && layout.tips[2].contains("Copy") && layout.tips[3].contains("Remove"),
+                   "icon order Choose File, Open, Copy, Remove, got \(layout.tips)")
+            if let dir = ProcessInfo.processInfo.environment["MARKA_PUBLISH_SNAPSHOT_DIR"] {
+                FileReferenceHarness.linkCardSnapshot(to: "\(dir)/linkcard.png")
+                FileReferenceHarness.linkCardSnapshot(to: "\(dir)/linkcard-dark.png", dark: true)
+            }
+        }
+
+        // File references: inside the repository → relative path; outside → ask (copy or original).
+        do {
+            let fm = FileManager.default
+            let base = fm.temporaryDirectory.appendingPathComponent("marka-ref-\(UUID().uuidString)")
+            defer { try? fm.removeItem(at: base) }
+            let repo = base.appendingPathComponent("repo"), docs = repo.appendingPathComponent("docs")
+            try fm.createDirectory(at: docs.appendingPathComponent("img"), withIntermediateDirectories: true)
+            try fm.createDirectory(at: repo.appendingPathComponent("shared"), withIntermediateDirectories: true)
+            let local = docs.appendingPathComponent("img/a b.png"), sibling = repo.appendingPathComponent("shared/logo (1).png")
+            let outside = base.appendingPathComponent("Downloads photo.png")
+            for f in [local, sibling, outside] { try Data([1, 2, 3]).write(to: f) }
+            expect(FileReferenceHarness.decide(local, image: true, documentDirectory: docs, trackedRoot: repo) == "inside:img/a%20b.png",
+                   "inside: relative, escaped path")
+            expect(FileReferenceHarness.decide(sibling, image: true, documentDirectory: docs, trackedRoot: repo) == "inside:../shared/logo%20%281%29.png",
+                   "inside the repository but beside the document: ../ path, got \(FileReferenceHarness.decide(sibling, image: true, documentDirectory: docs, trackedRoot: repo))")
+            expect(FileReferenceHarness.decide(sibling, image: true, documentDirectory: docs, trackedRoot: nil) == "outside:assets/logo (1).png",
+                   "not tracked: home is the document folder, so the sibling is outside")
+            expect(FileReferenceHarness.decide(outside, image: false, documentDirectory: docs, trackedRoot: repo) == "outside:Downloads photo.png",
+                   "linked file outside: suggests its name next to the document")
+            expect(FileReferenceHarness.decide(outside, image: true, documentDirectory: nil, trackedRoot: nil).hasPrefix("absolute:/"),
+                   "untitled document: absolute path")
+            let copy = try FileReferenceHarness.copy(outside, named: "assets/photo.png", into: docs)
+            expect(copy.path.hasSuffix("docs/assets/photo.png") && fm.contentsEqual(atPath: copy.path, andPath: outside.path), "copy into the chosen name")
+            let again = try FileReferenceHarness.copy(outside, named: "assets/photo.png", into: docs)
+            expect(again == copy, "identical file already there is reused")
+            try Data([9]).write(to: base.appendingPathComponent("other.png"))
+            let renamed = try FileReferenceHarness.copy(base.appendingPathComponent("other.png"), named: "assets/photo.png", into: docs)
+            expect(renamed.lastPathComponent == "photo-1.png", "different file never overwrites, got \(renamed.lastPathComponent)")
+            let escaped = try FileReferenceHarness.copy(outside, named: "../../escape.png", into: docs)
+            expect(escaped.path.hasSuffix("docs/escape.png"), "copy names cannot leave the document folder, got \(escaped.path)")
+            let alert = FileReferenceHarness.alertTexts(image: true, inRepository: true)
+            expect(alert.title == "“My Photo.png” is outside this document’s repository", "ask title, got \(alert.title)")
+            expect(alert.text.contains("breaks on other computers") && alert.buttons == ["Copy Image", "Use Original Location", "Cancel"] && alert.field == "assets/My Photo.png",
+                   "ask texts, buttons and editable name, got \(alert)")
+            if let git = Git.installed {
+                git.run(["init", "-q"], in: repo)
+                FileReferenceHarness.trackIfNeeded(local)
+                expect(git.isTracked(local, root: repo), "inserting an untracked image inside the repository starts tracking it")
+            }
+        } catch {
+            expect(false, "file reference test failed: \(error)")
+        }
+
+        // Images: shown like GitHub — no source, own space, never overlapping text; a card on click.
+        do {
+            let fm = FileManager.default
+            let dir = fm.temporaryDirectory.appendingPathComponent("marka-img-\(UUID().uuidString)")
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: dir) }
+            let chart = dir.appendingPathComponent("chart.png"), wide = dir.appendingPathComponent("wide.png"), icon = dir.appendingPathComponent("icon.png")
+            try EditorWindowHarness.writePNG(CGSize(width: 200, height: 100), to: chart)
+            try EditorWindowHarness.writePNG(CGSize(width: 2000, height: 500), to: wide)
+            try EditorWindowHarness.writePNG(CGSize(width: 40, height: 40), to: icon)
+            let doc = "Before the image.\n\n![Chart](\(chart.path))\n\nText with ![i](\(icon.path)) inside.\nAfter the images.\n\n![Wide](\(wide.path))\n\n![Missing](nothing/here.png)\n\nEnd.\n"
+            let h = EditorWindowHarness()
+            h.loadMarkdown(doc)
+            h.pump(0.3)
+            let frames = h.imageFrames
+            expect(frames.count == 4, "four images drawn (incl. placeholder), got \(frames.count)")
+            if frames.count == 4 {
+                let ns = doc as NSString
+                func y(_ text: String) -> CGFloat { h.canvasY(of: ns.range(of: text).location) }
+                expect(abs(frames[0].width - 200) < 1 && abs(frames[0].height - 100) < 1, "natural size kept, got \(frames[0].size)")
+                expect(y("Before") + 10 < frames[0].minY, "image below the text before it")
+                expect(frames[0].maxY <= y("Text with") + 0.5, "text after the image starts below it (no overlap): image \(frames[0].maxY), text \(y("Text with"))")
+                expect(frames[1].minY > y("Text with") && frames[1].maxY <= y("After the") + 0.5, "inline image drawn below its line, before the next line")
+                expect(abs(frames[2].width - h.contentWidth) < 1 && abs(frames[2].height - h.contentWidth / 4) < 1, "wide image fits the column, got \(frames[2].size)")
+                expect(frames[2].maxY <= y("![Missing") + 1, "wide image does not cover the next line")
+                expect(h.imagePlaceholders == [false, false, false, true], "missing image shows a placeholder, got \(h.imagePlaceholders)")
+                expect(frames[3].maxY <= y("End.") + 0.5, "placeholder has its own space")
+                let source = ns.range(of: "![Chart](")
+                expect(h.visibleSourceCharacters(in: NSRange(location: source.location, length: 12)).isEmpty, "image source (name, path) is hidden")
+                let inline = ns.range(of: "![i](")
+                expect(h.visibleSourceCharacters(in: NSRange(location: inline.location, length: 5)).isEmpty, "inline image source hidden")
+                expect(!h.visibleSourceCharacters(in: ns.range(of: "Text with")).isEmpty, "text around an inline image stays visible")
+            }
+            if let dir = ProcessInfo.processInfo.environment["MARKA_PUBLISH_SNAPSHOT_DIR"] {
+                h.pageSnapshot(0, height: 700, to: "\(dir)/images-page.png")
+                h.pdfPageSnapshot(0, to: "\(dir)/images-pdf.png")
+            }
+            h.clickImage(0)
+            expect(h.imageCardURL == chart.path, "clicking an image shows its card with the path, got \(h.imageCardURL ?? "nil")")
+            h.imageCardCommit(icon.path)
+            expect(h.markdown.contains("![Chart](\(icon.path))"), "card changes the image source")
+            expect(abs((h.imageFrames.first?.width ?? 0) - 40) < 1, "new image shown")
+            h.clickImage(0)
+            h.imageCardRemove()
+            expect(!h.markdown.contains("![Chart]") && h.markdown.hasPrefix("Before the image.\n\n\nText"), "remove deletes the image line, got \(h.markdown.prefix(40).debugDescription)")
+            expect(h.imageFrames.count == 3 && h.imageCardURL == nil, "card hides after removing")
+            h.setSourceMode(true)
+            expect(h.imageFrames.isEmpty, "source mode shows Markdown, no pictures")
+            h.close()
+        } catch {
+            expect(false, "image test failed: \(error)")
+        }
+
+        // Link card icons show the pointing hand (the text view below must not force its I-beam).
+        do {
+            let h = EditorWindowHarness()
+            h.loadMarkdown("See [the docs](https://example.com) here.\n")
+            h.select(NSRange(location: 6, length: 0))
+            h.pump(0.2)
+            expect(h.linkCardVisible, "link card shown for the pointer test")
+            for index in 0..<4 {
+                let pointer = h.linkCardPointer(button: index)
+                expect(pointer.button, "link card icon \(index) uses the pointing hand")
+                expect(!pointer.field, "address field keeps the I-beam")
+            }
+            h.close()
+        }
+
+        // Paths without a scheme are relative to the document ("./" implied); only real schemes are web.
+        do {
+            let docs = URL(fileURLWithPath: "/tmp/marka-docs", isDirectory: true)
+            for raw in ["example.com/page", "www.example.com", "docs/guide.md", "images/logo.png"] {
+                switch Hyperlink.destination(raw, relativeTo: docs) {
+                case .remote?: expect(false, "“\(raw)” must be a local path, not a web address")
+                case .file(let url)?, .markdown(let url)?:
+                    expect(url.path == "/tmp/marka-docs/" + raw, "“\(raw)” resolves like ./\(raw), got \(url.path)")
+                case nil: expect(false, "“\(raw)” resolves")
+                }
+            }
+            for raw in ["https://example.com", "http://example.com", "mailto:me@example.com"] {
+                if case .remote? = Hyperlink.destination(raw, relativeTo: docs) {} else { expect(false, "“\(raw)” stays a web / mail link") }
+            }
+        }
+
+        // Toolbar: Go to (overview) right after the page number; it opens the overview.
+        do {
+            let h = EditorWindowHarness()
+            h.loadMarkdown("# One\n\n## Two\n")
+            let ids = h.toolbarIdentifiers
+            if let page = ids.firstIndex(of: "pageInfo"), let overview = ids.firstIndex(of: "overview") {
+                expect(overview == page + 1, "overview control sits right after the page control, got \(ids)")
+            } else {
+                expect(false, "toolbar has page and overview controls, got \(ids)")
+            }
+            expect(h.openOverviewFromToolbar(), "toolbar overview button opens the Go to list")
+            expect(h.toolbarPaletteLabels["pageInfo"] == "Page" && h.toolbarPaletteLabels["overview"] == "Content", "toolbar names Page and Content, got \(h.toolbarPaletteLabels)")
+            let view = InsertHarness.viewMenu()
+            if let page = view.firstIndex(of: "Go to Page… ⌥⌘G") {
+                expect(page + 1 < view.count && view[page + 1] == "Go to Content… ⌘L", "Go to Content… ⌘L right under Go to Page…, got \(view)")
+            } else { expect(false, "View menu has Go to Page…, got \(view)") }
+            h.close()
+        }
+
+        if let dir = ProcessInfo.processInfo.environment["MARKA_CARD_ZOOM_SNAPSHOT_DIR"] {
+            let h = EditorWindowHarness()
+            h.loadMarkdown("See [the docs](assets/icon.png) here.\n")
+            for zoom in [1.0, 2.0] as [CGFloat] {
+                h.setManualZoom(zoom)
+                h.select(NSRange(location: 6, length: 0))
+                h.pump(0.3)
+                h.linkCardScreenSnapshot(to: "\(dir)/card-\(Int(zoom * 100)).png")
+            }
+            h.close()
+            let png = URL(fileURLWithPath: dir).appendingPathComponent("pic.png")
+            try? EditorWindowHarness.writePNG(CGSize(width: 300, height: 120), to: png)
+            let g = EditorWindowHarness()
+            g.loadMarkdown("Intro\n\n![Pic](\(png.path))\n\nAfter\n")
+            for zoom in [1.0, 1.25, 1.37, 1.5, 1.75, 2.0] as [CGFloat] {
+                g.setManualZoom(zoom)
+                g.clickImage(0)
+                g.pump(0.3)
+                g.linkCardScreenSnapshot(to: "\(dir)/imagecard-\(Int(zoom * 100)).png", image: true)
+                g.cardCompositedSnapshot(to: "\(dir)/imagecard-composited-\(Int(zoom * 100)).png", image: true)
+            }
+            g.close()
+        }
+
+        // About Marka links to the GitHub project.
+        expect(InsertHarness.aboutCredits.link == "https://github.com/lubino/marka" && InsertHarness.aboutCredits.text.contains("github.com/lubino/marka"),
+               "About panel links to GitHub, got \(InsertHarness.aboutCredits)")
+
+        // Card icons: drawn by an image view filling the button, the symbol fits — nothing to cut.
+        expect(FileReferenceHarness.cardIconFits() == [true, true, true, true, true], "card icons fit their buttons, got \(FileReferenceHarness.cardIconFits())")
+
+        // Run in Terminal: shell and Python blocks, not others.
+        do {
+            let h = EditorWindowHarness()
+            h.loadMarkdown("```bash\necho hi\n```\n\n```python\nprint('hi')\n```\n\n```swift\nprint(1)\n```\n")
+            expect(h.codeRunIcons == [true, true, false], "Terminal icon on bash and python blocks only, got \(h.codeRunIcons)")
+            h.close()
+        }
+
+        // Find & Replace: the replace text starts where the find text does (icon in both fields).
+        do {
+            let h = EditorWindowHarness()
+            let starts = h.findReplaceTextStarts
+            expect(abs(starts.find - starts.replace) < 1, "find and replace text start at the same x, got \(starts)")
+            if let dir = ProcessInfo.processInfo.environment["MARKA_PUBLISH_SNAPSHOT_DIR"] {
+                h.findPopoverSnapshot(to: "\(dir)/find.png")
+            }
+            h.close()
+        }
+
+        // File menu: Export PDF… and Publish… have icons; File → Share anchors under the toolbar.
+        do {
+            let icons = InsertHarness.fileMenuItemsWithIcons()
+            expect(icons.contains("Export PDF…") && icons.contains("Publish…"), "File menu icons for Export PDF and Publish, got \(icons)")
+            let h = EditorWindowHarness()
+            let share = h.menuShareAnchor
+            if let anchor = share.anchor {
+                expect(share.window.insetBy(dx: -2, dy: -2).contains(NSPoint(x: anchor.midX, y: anchor.midY)), "share anchor inside the window, got \(anchor) in \(share.window)")
+                expect(anchor.minY > share.window.midY, "share anchor is up in the toolbar, got \(anchor)")
+            } else {
+                expect(false, "File → Share has an anchor")
+            }
+            h.close()
+        }
+
+        // Command line: Marka -pdf in.md out.pdf exports and reports.
+        do {
+            let fm = FileManager.default
+            let dir = fm.temporaryDirectory.appendingPathComponent("marka-cli-\(UUID().uuidString)")
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: dir) }
+            let input = dir.appendingPathComponent("in.md")
+            try Data(((1...120).map { "Paragraph \($0) with a few words." }.joined(separator: "\n\n") + "\n").utf8).write(to: input)
+            let output = dir.appendingPathComponent("out/result.pdf")
+            let code = MarkaCommandLine.run(["Marka", "-pdf", input.path, output.path])
+            expect(code == 0, "-pdf exits 0, got \(String(describing: code))")
+            let pages = EditorWindowHarness.pdfPageCount(output)
+            expect(pages >= 2, "PDF written with the document's pages, got \(pages)")
+            expect(MarkaCommandLine.run(["Marka", "-pdf", dir.appendingPathComponent("missing.md").path]) == 1, "missing input → exit 1")
+            expect(MarkaCommandLine.run(["Marka", "-pdf"]) == 2, "no input → usage, exit 2")
+            expect(MarkaCommandLine.run(["Marka", "-NSDocumentRevisionsDebugMode", "YES"]) == nil, "other arguments start the app")
+            let defaultOut = MarkaCommandLine.run(["Marka", "--pdf", input.path])
+            expect(defaultOut == 0 && fm.fileExists(atPath: dir.appendingPathComponent("in.pdf").path), "default output next to the input")
+        } catch {
+            expect(false, "command line test failed: \(error)")
+        }
+
+        // Page popover: the overview icon is the link card's hover button (pointing hand), bigger.
+        if let size = EditorWindowHarness.pageOverviewButtonSize {
+            expect(size.width >= 28 && size.height >= 28, "page popover overview icon is card-sized, got \(size)")
+        } else {
+            expect(false, "page popover has the overview button")
+        }
+
+        // Markdown extras: text effects, GitHub alerts, anchors and overview, image options, emoji, tables.
+        do {
+            let fm = FileManager.default
+            let dir = fm.temporaryDirectory.appendingPathComponent("marka-extras-\(UUID().uuidString)")
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: dir) }
+            let logo = dir.appendingPathComponent("logo.png")
+            try EditorWindowHarness.writePNG(CGSize(width: 200, height: 100), to: logo)
+            try Data("# Notes\n".utf8).write(to: dir.appendingPathComponent("notes.md"))
+            let doc = """
+            # Intro
+
+            Water is H2O and E = mc2. Press K to search.
+
+            > [!NOTE]
+            > Highlights information users should take into account.
+
+            > [!WARNING]
+            > Critical content demanding immediate attention.
+
+            > A plain quote.
+
+            ## Shipping :rocket:
+
+            ![Logo](\(logo.path))
+
+            | Left | Center | Right |
+            |:-----|:------:|------:|
+            | a | b \\| c | ![L](\(logo.path)) 1 |
+
+            Done :) <3
+
+            """
+            let h = EditorWindowHarness()
+            h.loadMarkdown(doc)
+            // Effects through the toolbar actions, on selections.
+            let h2o = (h.markdown as NSString).range(of: "2O").location
+            h.select(NSRange(location: h2o, length: 1))
+            h.applyEffect("subscript")
+            expect(h.markdown.contains("H<sub>2</sub>O"), "subscript wraps the selection")
+            let mc = (h.markdown as NSString).range(of: "mc2").location + 2
+            h.select(NSRange(location: mc, length: 1))
+            h.applyEffect("superscript")
+            let k = (h.markdown as NSString).range(of: "Press K").location + 6
+            h.select(NSRange(location: k, length: 1))
+            h.applyEffect("keyboard")
+            let water = (h.markdown as NSString).range(of: "Water").location
+            h.select(NSRange(location: water, length: 5))
+            h.applyEffect("underline")
+            expect(h.markdown.contains("<ins>Water</ins>") && h.markdown.contains("mc<sup>2</sup>") && h.markdown.contains("<kbd>K</kbd>"),
+                   "effects written as GitHub tags, got \(h.markdown.prefix(120))")
+            h.select(NSRange(location: 0, length: 0))
+            let ns = h.markdown as NSString
+            expect(h.underlined(at: ns.range(of: "Water").location), "underline drawn")
+            expect(h.baselineOffset(at: ns.range(of: "<sup>2").location + 5) > 0, "superscript raised")
+            expect(h.baselineOffset(at: ns.range(of: "<sub>2").location + 5) < 0, "subscript lowered")
+            expect(h.visibleSourceCharacters(in: ns.range(of: "<sub>")).isEmpty, "effect tags hidden")
+            // Alerts: coloured bars + titles; plain quote gets a grey bar.
+            expect(h.quoteBars == ["note", "warning", ""], "quote bars: note, warning, plain — got \(h.quoteBars)")
+            expect(h.alertTitlesDrawn == 2, "alert titles drawn")
+            expect(h.visibleSourceCharacters(in: ns.range(of: "[!NOTE]")).isEmpty, "[!NOTE] marker hidden")
+            // Anchors and overview.
+            h.openAnchor("#shipping-rocket")
+            expect(h.caretLocation == ns.range(of: "## Shipping").location, "#anchor link scrolls to its heading")
+            let rows = h.overviewRows(directory: dir)
+            expect(rows.prefix(3) == ["§ Headings", "# intro", "# shipping-rocket"], "overview lists headings with anchors, got \(rows)")
+            expect(rows.contains("§ Documents") && rows.contains("file notes.md") && rows.contains("file logo.png"), "overview lists files")
+            expect(h.overviewRows(filter: "ship") == ["§ Headings", "# shipping-rocket"], "overview filter")
+            expect(h.overviewPointers(directory: dir) == rows.map { !$0.hasPrefix("§") }, "clickable overview rows show the pointing hand, section titles do not")
+            expect(h.overviewHoverAfterScroll(directory: dir, from: 1, to: 2) == [2], "scrolling under the pointer moves the highlight, never leaves several rows highlighted")
+            // Emoji shortcodes (setting on for this editor only).
+            expect(h.drawnEmoji.isEmpty, "emoji shortcodes off by default")
+            h.setEmojiShortcodes(true)
+            expect(h.drawnEmoji == ["🚀"], "shortcode drawn as emoji (emoticons stay text), got \(h.drawnEmoji)")
+            if let dir = ProcessInfo.processInfo.environment["MARKA_PUBLISH_SNAPSHOT_DIR"] {
+                h.pageSnapshot(0, height: 900, to: "\(dir)/extras-page.png")
+                h.pdfPageSnapshot(0, to: "\(dir)/extras-pdf.png")
+                h.popoverSnapshots(to: dir, directory: logo.deletingLastPathComponent())
+            }
+            // Image options: width + centre.
+            h.applyImageOptions(0, width: "100", align: "center")
+            expect(h.markdown.contains("<p align=\"center\"><img src=\"\(logo.path)\" alt=\"Logo\" width=\"100\"></p>"), "image options written as <img>")
+            if let frame = h.imageFrames.first {
+                expect(abs(frame.width - 100) < 1 && abs(frame.height - 50) < 1, "width 100 keeps the ratio, got \(frame.size)")
+                let left = frame.minX - (h.imageFrames.first.map { _ in 0 } ?? 0)
+                _ = left
+            }
+            // Editing a cell that holds an image shows the picture (source only with the caret inside it).
+            let row2 = h.markdown.components(separatedBy: "\n").first { $0.contains("![L](\(logo.path))") }
+            expect(row2 != nil, "table cell holds an image")
+            h.clickTableCell(row: 2, column: 2)
+            let editing = h.cellPictureState
+            expect(editing.drawsPictures && editing.pictures == 1, "editing the cell shows the picture, not its file name, got \(editing)")
+            if let snap = ProcessInfo.processInfo.environment["MARKA_PUBLISH_SNAPSHOT_DIR"] {
+                h.pageSnapshot(0, height: 900, to: "\(snap)/cell-editing.png")
+            }
+            h.selectInCell(NSRange(location: 3, length: 0))
+            expect(h.cellPictureState.pictures == 1, "the picture stays while editing")
+            let groupEnd = (editing.text as NSString).range(of: ")").location + 1
+            expect(h.cellCaret == groupEnd || h.cellCaret == 0, "caret snaps out of the hidden image Markdown, got \(h.cellCaret)")
+            expect(h.tableRowHeight(2) > 60, "the row grows to the picture's height, got \(h.tableRowHeight(2))")
+            h.clickTableCell(row: 2, column: 0)
+            // Clicking a cell's picture opens the image card (same as pictures in the text).
+            h.clickCellImage(row: 2, column: 2)
+            expect(h.imageCardURL == logo.path, "cell picture opens the image card with its path, got \(h.imageCardURL ?? "nil")")
+            h.imageCardCommit("logo.png")
+            expect(h.markdown.contains("![L](logo.png) 1"), "card edits the image inside the cell")
+            h.imageCardCommit(logo.path)
+
+            // An image inserted while editing a table cell goes into that cell and shows there.
+            h.clickTableCell(row: 2, column: 0)
+            h.insertImageInCell(path: "logo.png", alt: "L")
+            h.clickTableCell(row: 2, column: 2)
+            expect(h.markdown.contains("| a![L](logo.png) |") || h.markdown.contains("![L](logo.png)a") || h.markdown.contains("| ![L](logo.png)"),
+                   "image Markdown lands in the cell, got \(h.markdown.components(separatedBy: "\n").first { $0.contains("logo.png)") } ?? "none")")
+            expect(!h.markdown.contains("\n![L](logo.png)\n"), "not inserted into the text behind the table")
+            // Replace Emojis: :rocket:, :) and <3.
+            let found = h.replaceAllEmojis()
+            expect(found.hasSuffix("of 3"), "emoji mode finds three codes, got \(found)")
+            expect(h.markdown.contains("## Shipping 🚀") && h.markdown.contains("Done 🙂 ❤️"), "Replace All puts in the emoji")
+            h.close()
+        } catch {
+            expect(false, "extras test failed: \(error)")
+        }
+
+        // Settings: auto-load and Git integration are on by default.
+        expect(EditorSettings.default.autoload && EditorSettings.default.gitIntegration, "auto-load and git default on")
+
+        // Publish popover (fake snapshot).
+        do {
+            let snapshot = PublishSnapshot(
+                root: URL(fileURLWithPath: "/tmp/notes"),
+                branch: "main",
+                hasOrigin: true,
+                changes: [GitChange(path: "docs/README.md", code: " M"), GitChange(path: "assets/a.png", code: "A ")],
+                diffs: ["docs/README.md": "--- a/docs/README.md\n+++ b/docs/README.md\n@@ -1 +1 @@\n-old\n+new\n", "assets/a.png": "Binary files differ\n"],
+                commits: [GitCommit(hash: "0123456789", author: "Ada", date: Date(), subject: "Earlier change")]
+            )
+            let publish = PublishPopoverHarness(snapshot: snapshot)
+            expect(publish.message == "Update 2 files", "suggested commit message, got \(publish.message)")
+            expect(publish.publishEnabled, "Publish enabled with changes and a message")
+            publish.setMessage("   ")
+            expect(!publish.publishEnabled, "Publish disabled with an empty message")
+            publish.setMessage("Fix typo")
+            expect(publish.visibleTab == 0, "Message tab first")
+            publish.clickFile(0)
+            expect(publish.visibleTab == 2 && publish.diffText.contains("+new"), "clicking a file shows its diff")
+            publish.selectTab(3)
+            expect(publish.visibleTab == 3, "History tab")
+            let frames = publish.buttonFrames
+            let right = frames.bounds.maxX - frames.publish.maxX
+            let bottom = frames.publish.minY - frames.bounds.minY
+            expect(abs(right - 20) < 1 && abs(bottom - 20) < 1, "Publish button keeps the popover padding (right \(right), bottom \(bottom))")
+            expect(frames.cancel.maxX <= frames.publish.minX, "Cancel sits left of Publish")
+            if let dir = ProcessInfo.processInfo.environment["MARKA_PUBLISH_SNAPSHOT_DIR"] {
+                publish.setMessage("Fix typo in the install section\n\nThe curl command missed -L.")
+                for tab in 0..<4 { publish.snapshot(tab: tab, to: "\(dir)/publish-\(tab).png") }
+                publish.snapshot(tab: 1, to: "\(dir)/publish-dark.png", dark: true)
+                for mermaid in [false, true] {
+                    PublishPopoverHarness.renderedEditorSnapshot(mermaid: mermaid, to: "\(dir)/source-\(mermaid ? "mermaid" : "math").png")
+                }
+            }
+            let empty = PublishPopoverHarness(snapshot: PublishSnapshot(root: URL(fileURLWithPath: "/tmp/n"), branch: nil, hasOrigin: false, changes: [], diffs: [:], commits: []))
+            expect(!empty.publishEnabled, "nothing to publish → disabled")
+
+            let failure = PublishPopoverHarness.failureAlert(.pushFailed(log: "$ git push\nfatal: no remote\n"))
+            expect(failure.title == "Publish could not be completed" && failure.text.contains("external Git tool"), "push failure texts")
+            expect(failure.expandedHeight > failure.collapsedHeight + 100 && failure.log, "Show more reveals the git log")
+            expect(PublishPopoverHarness.failureAlert(.commitFailed(log: "x")).title == "Publish could not be done", "commit failure title")
+        }
+
+        // Auto-load: another app changes the file → the open document follows; Marka's own save does not reload.
+        do {
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("marka-autoload-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let url = dir.appendingPathComponent("watched.md")
+            try Data("# One\n\nFirst.\n".utf8).write(to: url)
+            let doc = try DocumentFileHarness(url: url)
+            expect(doc.text.contains("First."), "document opened")
+            try Data("# One\n\nChanged elsewhere.\n".utf8).write(to: url)
+            doc.pump(1.0)   // file watcher, no explicit check
+            expect(doc.text.contains("Changed elsewhere."), "watcher reloads an external change, got \(doc.text)")
+            expect(!doc.isEdited, "reloaded document is not marked edited")
+            // Atomic replace (how many editors and git write files).
+            let temp = dir.appendingPathComponent("tmp.md")
+            try Data("# One\n\nReplaced atomically.\n".utf8).write(to: temp)
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: temp)
+            doc.pump(1.2)
+            expect(doc.text.contains("Replaced atomically."), "watcher survives an atomic replace, got \(doc.text)")
+            doc.type("\nTyped in Marka.")
+            doc.save()
+            doc.checkForExternalChange()
+            expect(doc.text.contains("Typed in Marka.") && !doc.isEdited, "own save is not reloaded")
+            let onDisk = try String(contentsOf: url, encoding: .utf8)
+            expect(onDisk.contains("Typed in Marka."), "save wrote the edit")
+            doc.close()
+        } catch {
+            expect(false, "auto-load test failed: \(error)")
+        }
+
+        // Updating to a newer published version reloads the open document (even with auto-load off).
+        if let git = Git.installed {
+            do {
+                let dir = FileManager.default.temporaryDirectory.appendingPathComponent("marka-update-\(UUID().uuidString)")
+                defer { try? FileManager.default.removeItem(at: dir) }
+                let hub = dir.appendingPathComponent("hub.git"), mine = dir.appendingPathComponent("mine"), theirs = dir.appendingPathComponent("theirs")
+                for d in [hub, mine] { try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true) }
+                git.run(["init", "-q", "--bare", "-b", "main"], in: hub)
+                for args in [["init", "-q", "-b", "main"], ["config", "user.name", "T"], ["config", "user.email", "t@example.invalid"], ["config", "commit.gpgsign", "false"]] {
+                    git.run(args, in: mine)
+                }
+                let page = mine.appendingPathComponent("page.md")
+                try Data("# Page\n\nOld text.\n".utf8).write(to: page)
+                git.run(["add", "page.md"], in: mine)
+                git.run(["commit", "-q", "-m", "v1"], in: mine)
+                git.run(["remote", "add", "origin", hub.path], in: mine)
+                git.run(["push", "-q", "-u", "origin", "main"], in: mine)
+                let doc = try DocumentFileHarness(url: page)
+                doc.pump(1.0)   // the open-time check finds nothing yet
+                git.run(["clone", "-q", hub.path, theirs.path], in: dir)
+                for args in [["config", "user.name", "Other"], ["config", "user.email", "o@example.invalid"], ["config", "commit.gpgsign", "false"]] {
+                    git.run(args, in: theirs)
+                }
+                try Data("# Page\n\nNew published text.\n".utf8).write(to: theirs.appendingPathComponent("page.md"))
+                git.run(["commit", "-q", "-am", "v2"], in: theirs)
+                git.run(["push", "-q"], in: theirs)
+                if let update = GitUpdater.check(git: git, file: page) {
+                    doc.applyPublishedUpdate(update)
+                    expect(doc.text.contains("New published text."), "document shows the published version, got \(doc.text)")
+                    expect(!doc.isEdited, "updated document is clean")
+                } else {
+                    expect(false, "newer published version detected")
+                }
+                doc.close()
+            } catch {
+                expect(false, "published update test failed: \(error)")
+            }
+        }
+
+        // Git state: a tracked document enables Publish; an untracked one does not.
+        if let git = Git.installed {
+            do {
+                let dir = FileManager.default.temporaryDirectory.appendingPathComponent("marka-publish-\(UUID().uuidString)")
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                defer { try? FileManager.default.removeItem(at: dir) }
+                git.run(["init", "-q"], in: dir)
+                let tracked = dir.appendingPathComponent("tracked.md")
+                let loose = dir.appendingPathComponent("loose.md")
+                try Data("# T\n".utf8).write(to: tracked)
+                try Data("# L\n".utf8).write(to: loose)
+                git.run(["add", "tracked.md"], in: dir)
+                let a = try DocumentFileHarness(url: tracked)
+                a.refreshGitState()
+                expect(a.hasPublishToolbarItem, "Publish button in the toolbar")
+                expect(a.gitRootPath?.hasSuffix(dir.lastPathComponent) == true, "tracked document enables Publish, got \(a.gitRootPath ?? "nil")")
+                a.close()
+                // Publish starts tracking files the document links to.
+                let assets = dir.appendingPathComponent("assets")
+                try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+                try Data([0x89]).write(to: assets.appendingPathComponent("my photo.png"))
+                try Data("# Linked\n".utf8).write(to: dir.appendingPathComponent("linked.md"))
+                let source = "# T\n\n[linked](linked.md#intro) ![p](assets/my%20photo.png) [web](https://example.com) [gone](missing.md) [dir](assets)\n"
+                expect(DocumentFileHarness.linkedFiles(in: source, directory: dir).sorted() == ["linked.md", "my photo.png"],
+                       "linked local files (anchor dropped, encoded space, no web / missing / folder links), got \(DocumentFileHarness.linkedFiles(in: source, directory: dir))")
+                let linking = try DocumentFileHarness(url: tracked)
+                linking.refreshGitState()
+                linking.type("\n[linked](linked.md#intro) ![p](assets/my%20photo.png)\n")
+                let changes = linking.publishChanges()
+                let added = changes.filter { $0.label == "Added" && $0.path != "tracked.md" }.map(\.path).sorted()   // tracked.md itself was never committed
+                expect(added == ["assets/my photo.png", "linked.md"], "Publish lists linked untracked files as Added, got \(changes)")
+                expect(changes.contains { $0.path == "tracked.md" }, "the document itself is in the list")
+                expect(!changes.contains { $0.path == "loose.md" }, "unlinked untracked files stay out")
+                linking.close()
+                let b = try DocumentFileHarness(url: loose)
+                b.refreshGitState()
+                expect(b.gitRootPath == nil, "untracked document keeps Publish disabled")
+                b.close()
+            } catch {
+                expect(false, "git state test failed: \(error)")
+            }
         }
 
         if failed > 0 {

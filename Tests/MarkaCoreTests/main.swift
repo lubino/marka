@@ -473,6 +473,17 @@ enum MarkaTests {
             expect(ShellRunner.isShell("zsh"), "zsh is a shell fence")
             expect(ShellRunner.isShell("sh"), "sh is a shell fence")
             expect(ShellRunner.isShell("python") == false, "python is not a shell fence")
+            expect(ShellRunner.isRunnable("python") && ShellRunner.isRunnable("Python3") && ShellRunner.isRunnable("py"), "python fences can run")
+            expect(!ShellRunner.isRunnable("swift") && !ShellRunner.isRunnable(nil), "other languages do not run")
+            if let py = try? ShellRunner.writeCommandFile(script: "print('hi')", workingDirectory: "/tmp/doc", language: "python") {
+                let body = (try? String(contentsOf: py, encoding: .utf8)) ?? ""
+                let script = body.components(separatedBy: "\n").first { $0.hasPrefix("python3 ") } ?? ""
+                let pyPath = String(script.dropFirst("python3 '".count).dropLast())
+                expect(body.contains("cd '/tmp/doc'") && !script.isEmpty, "python runs via python3 in the document folder")
+                expect((try? String(contentsOf: URL(fileURLWithPath: pyPath), encoding: .utf8)) == "print('hi')", "the script is saved as a .py file")
+                try? FileManager.default.removeItem(at: py)
+                try? FileManager.default.removeItem(atPath: pyPath)
+            } else { expect(false, "python command file") }
             expect(ShellRunner.isShell(nil) == false, "missing language is not a shell")
             let body = ShellRunner.commandFileContents(script: "echo hi", workingDirectory: "/tmp/doc")
             expect(body.hasPrefix("#!/bin/zsh"), "zsh shebang")
@@ -481,6 +492,40 @@ enum MarkaTests {
             let file = try ShellRunner.writeCommandFile(script: "echo hi", workingDirectory: nil)
             expect(FileManager.default.isExecutableFile(atPath: file.path), "command file is executable")
             try? FileManager.default.removeItem(at: file)
+            expect(!body.contains("Press") && !body.contains("read"), "no key prompt by default")
+
+            // Run the command files for real (zsh, no Terminal): exit codes, prompt, cleanup.
+            func runCommand(_ url: URL) -> (status: Int32, output: String) {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                process.arguments = [url.path]
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                process.standardError = pipe
+                process.standardInput = FileHandle.nullDevice
+                try? process.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+            }
+            let plain = try ShellRunner.writeCommandFile(script: "echo working; exit 3", workingDirectory: "/tmp")
+            let plainRun = runCommand(plain)
+            expect(plainRun.status == 3 && plainRun.output == "working\n", "no extra output, script's exit code kept, got \(plainRun)")
+            expect(!FileManager.default.fileExists(atPath: plain.path), "the command file removes itself")
+            let python = try ShellRunner.writeCommandFile(script: "print(6 * 7)", workingDirectory: "/tmp", language: "python")
+            let pyPath = (try? String(contentsOf: python, encoding: .utf8))?.components(separatedBy: "\n").first { $0.hasPrefix("python3 ") }
+                .map { String($0.dropFirst("python3 '".count).dropLast()) } ?? ""
+            let pythonRun = runCommand(python)
+            if FileManager.default.isExecutableFile(atPath: "/usr/bin/python3") {
+                expect(pythonRun.output.contains("42"), "python block runs, got \(pythonRun.output)")
+            }
+            expect(!FileManager.default.fileExists(atPath: python.path) && !FileManager.default.fileExists(atPath: pyPath), "the .command and .py files are cleaned up")
+            let failing = try ShellRunner.writeCommandFile(script: "echo oops; false", workingDirectory: nil, waitForKey: true)
+            let failingRun = runCommand(failing)
+            expect(failingRun.output.contains("✗ Exited with code 1") && failingRun.output.contains("Press any key to close"), "wait mode shows the failure and asks for a key, got \(failingRun.output)")
+            expect(failingRun.status == 1, "wait mode keeps the script's exit code")
+            let ok = try ShellRunner.writeCommandFile(script: "true", workingDirectory: nil, waitForKey: true)
+            expect(runCommand(ok).output.contains("✓ Finished"), "wait mode shows success")
         } catch {
             expect(false, "shell command file: \(error)")
         }
@@ -714,6 +759,342 @@ enum MarkaTests {
                 end = NSMaxRange(t.range)
             }
             expect(ok, "\(info) tokens are non-overlapping and in range")
+        }
+
+        // Text effects: GitHub-safe <ins>, <sup>, <sub>, <kbd> (+ <u>).
+        do {
+            let text = "a <ins>under</ins> x<sup>2</sup> H<sub>2</sub>O <kbd>⌘K</kbd> <u>old</u> <sup>**b**</sup>"
+            let spans = MarkdownSyntax.inlineSpans(in: text)
+            let ns = text as NSString
+            func content(_ kind: StyleKind) -> [String] { spans.filter { $0.kind == kind && $0.role == .content }.map { ns.substring(with: $0.range) } }
+            expectEqual(content(.underline), ["under", "old"], "underline from <ins> and <u>")
+            expectEqual(content(.superscript), ["2", "**b**"], "superscript")
+            expectEqual(content(.`subscript`), ["2"], "subscript")
+            expectEqual(content(.keyboard), ["⌘K"], "keyboard")
+            expect(spans.contains { $0.kind == .strong && $0.role == .content }, "bold inside <sup> still parsed")
+            expect(MarkdownSyntax.inlineSpans(in: "a <sup>open").allSatisfy { $0.kind != .superscript }, "unclosed tag stays text")
+            let wrapped = MarkdownEditing.toggleInline(source: "x2", selected: NSRange(location: 1, length: 1), left: "<sup>", right: "</sup>", kind: .superscript)
+            expectEqual(wrapped.text, "x<sup>2</sup>", "wrap selection in <sup>")
+            let state = MarkdownEditing.format(at: NSRange(location: 6, length: 0), in: wrapped.text)
+            expect(state.superscript && !state.`subscript`, "format state sees superscript")
+            let unwrapped = MarkdownEditing.toggleInline(source: wrapped.text, selected: NSRange(location: 6, length: 0), left: "<sup>", right: "</sup>", kind: .superscript)
+            expectEqual(unwrapped.text, "x2", "toggle again unwraps")
+        }
+
+        // GitHub alerts.
+        do {
+            let doc = "> [!NOTE]\n> Useful.\n\n> [!warning]\n> Careful!\n\n> [!TIP] extra\n> no\n\n> plain\n"
+            let alerts = MarkdownSyntax.alerts(in: doc)
+            expectEqual(alerts.map(\.kind), [.note, .warning], "NOTE and lower-case warning; text after the marker = plain quote")
+            expectEqual((doc as NSString).substring(with: alerts[0].marker), "[!NOTE]", "marker range")
+            let inserted = MarkdownEditing.insertAlert(source: "Text\n", selected: NSRange(location: 5, length: 0), kind: .caution)
+            expectEqual(inserted.text, "Text\n> [!CAUTION]\n> ", "insert alert")
+            expectEqual(inserted.selected.location, ("Text\n> [!CAUTION]\n> " as NSString).length, "caret on the alert text line")
+            expectEqual(MarkdownSyntax.alerts(in: inserted.text).first?.kind, .caution, "inserted alert is detected")
+        }
+
+        // Tables (GitHub): alignment, escaped pipes.
+        do {
+            let table = "| a | b | c | d |\n|---|:--|:-:|--:|\n| 1 | x \\| y | 3 | 4 |\n"
+            let block = TableMutator.block(at: 0, in: table)
+            expectEqual(block?.alignments, [.none, .left, .center, .right], "column alignment from the delimiter row")
+            expectEqual(block?.rows[2], ["1", "x \\| y", "3", "4"], "escaped pipe stays inside its cell")
+            if let cell = TableMutator.cell(at: (table as NSString).range(of: "| 1").location + 2, in: table),
+               let aligned = TableMutator.setAlignment(source: table, cell: TableMutator.CellRef(block: cell.block, row: cell.row, column: 3), alignment: .center) {
+                expectEqual(TableMutator.block(at: 0, in: aligned.text)?.alignments.last, .center, "set a column's alignment")
+            } else { expect(false, "setAlignment") }
+            if let edited = TableMutator.setCell(source: table, location: 0, row: 2, column: 0, value: "a|b") {
+                expect(edited.text.contains("a\\|b"), "a typed pipe is escaped")
+                expectEqual(TableMutator.block(at: 0, in: edited.text)?.columnCount, 4, "column count unchanged")
+            } else { expect(false, "setCell") }
+        }
+
+        // GitHub heading anchors.
+        do {
+            expectEqual(MarkdownSyntax.githubSlug("Hello, World!"), "hello-world", "slug drops punctuation")
+            expectEqual(MarkdownSyntax.githubSlug("Čo je nové? 2.0"), "čo-je-nové-20", "slug keeps letters with accents")
+            let doc = "# Intro\n## Install `Marka.app`\n## **Bold** [link](x)\n# Intro\n"
+            let anchors = MarkdownSyntax.headingAnchors(in: doc)
+            expectEqual(anchors.map(\.slug), ["intro", "install-markaapp", "bold-link", "intro-1"], "anchors: markers stripped, duplicates numbered")
+            expectEqual(anchors[1].title, "Install Marka.app", "plain heading title")
+            expectEqual(MarkdownSyntax.heading(forAnchor: "#intro-1", in: doc)?.location, (doc as NSString).range(of: "# Intro", options: .backwards).location, "anchor → heading")
+        }
+
+        // Image options: GitHub <img> attributes and <p align="center">.
+        do {
+            let doc = "<p align=\"center\"><img src=\"a b.png\" alt=\"Logo\" width=\"120\"></p>\nText <img src='i.png' height=20 align=right> end\n![Plain](p.png \"Tip\")\n"
+            let lines = MarkdownSyntax.imageLines(in: doc)
+            expectEqual(lines.count, 3, "html and markdown image lines")
+            let centred = lines[0].images[0]
+            expect(lines[0].imageOnly && centred.isHTML && centred.align == "center" && centred.width == "120" && centred.alt == "Logo" && centred.source == "a b.png",
+                   "centred <img> in <p>: \(centred)")
+            expect(!lines[1].imageOnly && lines[1].images[0].height == "20" && lines[1].images[0].align == "right", "inline <img> attributes")
+            expectEqual(lines[2].images[0].title, "Tip", "markdown title")
+            if let plain = MarkdownEditing.setImageOptions(source: doc, imageAt: centred.group.location, options: ImageOptions(alt: "Logo")) {
+                expect(plain.text.hasPrefix("![Logo](a b.png)\n"), "no size / align → plain Markdown (wrapper removed), got \(plain.text.prefix(30))")
+            } else { expect(false, "setImageOptions plain") }
+            let md = lines[2].images[0]
+            if let html = MarkdownEditing.setImageOptions(source: doc, imageAt: md.group.location, options: ImageOptions(alt: "Plain", title: "Tip", width: "50%", align: "center")) {
+                expect(html.text.contains("<p align=\"center\"><img src=\"p.png\" alt=\"Plain\" title=\"Tip\" width=\"50%\"></p>"), "size + centre → <img> in <p>")
+                let back = MarkdownSyntax.imageLines(in: html.text).last?.images.first
+                expect(back?.width == "50%" && back?.align == "center", "written options read back")
+            } else { expect(false, "setImageOptions html") }
+            if let removed = MarkdownEditing.removeImage(source: doc, imageAt: centred.group.location) {
+                expect(removed.text.hasPrefix("Text <img"), "removing a centred image removes its wrapper line")
+            } else { expect(false, "remove html image") }
+        }
+
+        // Images inside table cells.
+        do {
+            let doc = "Intro\n\n| Name | Logo |\n|---|---|\n| a \\| b | ![L](logo.png) and <img src=\"x.png\" width=\"40\"> |\n"
+            let ns = doc as NSString
+            if let block = TableMutator.block(at: ns.range(of: "| Name").location, in: doc) {
+                let cell = TableMutator.cellRange(in: doc, block: block, row: 2, column: 1)
+                expectEqual(cell.map { ns.substring(with: $0) }, "![L](logo.png) and <img src=\"x.png\" width=\"40\">", "cell range is the trimmed cell text")
+                expectEqual(TableMutator.cellRange(in: doc, block: block, row: 2, column: 0).map { ns.substring(with: $0) }, "a \\| b", "escaped pipe stays in its cell")
+            } else { expect(false, "table found") }
+            let images = MarkdownSyntax.tableImages(in: doc)
+            expectEqual(images.map(\.source), ["logo.png", "x.png"], "Markdown and <img> images in cells")
+            expectEqual(images.first?.alt, "L", "cell image alt")
+            expect(MarkdownSyntax.imageLines(in: doc).isEmpty, "cell images are not drawn as text images")
+            if let edited = MarkdownEditing.setImageSource(source: doc, imageAt: images[0].group.location, to: "assets/new.png") {
+                expect(edited.text.contains("| ![L](assets/new.png) and"), "change a cell image's source")
+            } else { expect(false, "setImageSource in a cell") }
+            if let removed = MarkdownEditing.removeImage(source: doc, imageAt: images[0].group.location) {
+                expect(removed.text.contains("|  and <img") && removed.text.hasSuffix("|\n"), "remove a cell image, the row stays")
+            } else { expect(false, "removeImage in a cell") }
+            if let centred = MarkdownEditing.setImageOptions(source: doc, imageAt: images[0].group.location, options: ImageOptions(alt: "L", width: "80", align: "center")) {
+                expect(centred.text.contains("| <img src=\"logo.png\" alt=\"L\" width=\"80\"> and") && !centred.text.contains("<p align"), "no <p> wrapper inside a table row")
+            } else { expect(false, "setImageOptions in a cell") }
+        }
+
+        // Statistics count GitHub <img> tags as images too.
+        expectEqual(DocumentStats.compute("![a](a.png)\n<img src=\"b.png\" width=\"40%\">\n<p align=\"center\"><IMG src='c.png'></p>\n").images, 3,
+                    "images: Markdown and <img>")
+
+        // Emoji codes.
+        do {
+            let doc = "Ship it :rocket: :) and <3\n`:smile:` $:a:$ [x](http://a:)) :notacode: http://x.com/:p\n"
+            let found = EmojiCatalog.matches(in: doc)
+            expectEqual(found.map(\.code), [":rocket:", ":)", "<3"], "codes outside code / math / URLs, unknown names skipped, got \(found.map(\.code))")
+            expectEqual(found.map(\.emoji), ["🚀", "🙂", "❤️"], "their emoji")
+            expectEqual(EmojiCatalog.matches(in: doc, includeEmoticons: false).count, 1, "shortcodes only")
+            let replaced = EmojiCatalog.replaceAll(in: doc)
+            expect(replaced.count == 3 && replaced.text.hasPrefix("Ship it 🚀 🙂 and ❤️\n`:smile:`"), "replace all, got \(replaced.text.prefix(30))")
+        }
+
+        // Images: lines, image-only detection, editing.
+        do {
+            let doc = "# T\n![Chart](assets/chart.png)\nText with ![icon](i.png \"Icon\") inline.\n[![CI](https://x/badge.svg)](https://x) ![v](<my v.png>)\n```\n![no](code.png)\n```\n| a |\n|---|\n| ![no](t.png) |\n"
+            let lines = MarkdownSyntax.imageLines(in: doc)
+            expectEqual(lines.count, 3, "three image lines (code and table skipped)")
+            expect(lines[0].imageOnly && lines[0].images.first?.source == "assets/chart.png" && lines[0].images.first?.alt == "Chart", "image-only line, source and alt")
+            expect(!lines[1].imageOnly && lines[1].images.first?.source == "i.png", "inline image: not image-only, title stripped")
+            expect(lines[2].imageOnly && lines[2].images.map(\.source) == ["https://x/badge.svg", "my v.png"], "linked badge + angle-bracket image line is image-only")
+            let ns = doc as NSString
+            expectEqual(ns.substring(with: lines[1].images[0].sourceRange), "i.png", "source range excludes the title")
+            if let edit = MarkdownEditing.setImageSource(source: doc, imageAt: lines[1].images[0].group.location, to: "img/new.png") {
+                expect(edit.text.contains("![icon](img/new.png \"Icon\")"), "set source keeps alt and title")
+            } else { expect(false, "setImageSource") }
+            if let edit = MarkdownEditing.setImageSource(source: doc, imageAt: lines[2].images[1].group.location, to: "b.png") {
+                expect(edit.text.contains("![v](b.png)"), "angle brackets replaced too")
+            } else { expect(false, "setImageSource angle") }
+            if let removed = MarkdownEditing.removeImage(source: doc, imageAt: lines[0].images[0].group.location) {
+                expect(removed.text.hasPrefix("# T\nText with"), "removing the only image removes its line")
+            } else { expect(false, "removeImage") }
+            if let removed = MarkdownEditing.removeImage(source: doc, imageAt: lines[1].images[0].group.location) {
+                expect(removed.text.contains("Text with  inline."), "removing an inline image keeps the text")
+            } else { expect(false, "removeImage inline") }
+        }
+
+        // Insert menu templates: every example parses cleanly.
+        do {
+            for kind in InsertKind.allCases {
+                expect(kind.templates.count >= 3, "\(kind.title) gallery has examples")
+                for template in kind.templates {
+                    switch kind.preview {
+                    case .math:
+                        let node = MathParser.parse(template.body)
+                        expect(!String(describing: node).contains("error("), "\(kind.title) “\(template.title)” has no unknown commands: \(node)")
+                    case .mermaid:
+                        let diagram = Mermaid.parse(template.body)
+                        let ok: Bool
+                        switch (kind, diagram) {
+                        case (.flowchart, .flowchart), (.leftToRight, .flowchart), (.sequence, .sequence), (.pie, .pie): ok = true
+                        default: ok = false
+                        }
+                        expect(ok, "\(kind.title) “\(template.title)” parses as its diagram type, got \(diagram)")
+                    case .code:
+                        expect(template.body.isEmpty && !template.sample.isEmpty, "code tiles insert an empty fence and show a sample")
+                    }
+                }
+            }
+            let euler = InsertKind.equation.templates[4]
+            let mid = MarkdownEditing.insertTemplate(source: "Before after", selected: NSRange(location: 7, length: 0), template: euler)
+            expectEqual(mid.text, "Before \n```math\ne^{i\\pi} + 1 = 0\n```\nafter", "template on its own lines mid-paragraph")
+            expectEqual(mid.selected.location, ("Before \n```math\ne^{i\\pi} + 1 = 0\n```\n" as NSString).length, "caret after the block")
+            let end = MarkdownEditing.insertTemplate(source: "Text\n", selected: NSRange(location: 5, length: 0), template: euler)
+            expectEqual(end.text, "Text\n```math\ne^{i\\pi} + 1 = 0\n```\n", "template at the end")
+            let code = MarkdownEditing.insertTemplate(source: "", selected: NSRange(location: 0, length: 0), template: InsertKind.codeBlock.templates[1])
+            expect(code.text == "```bash\n\n```" && code.selected.location == 8, "code tile inserts an empty fence with the caret inside, got \(code.text.debugDescription)")
+        }
+
+        // Git: parsing
+        do {
+            let changes = Git.parsePorcelain(" M docs/a.md\0A  new file.md\0R  b.md\0old b.md\0?? img/x.png\0")
+            expectEqual(changes.map(\.path), ["docs/a.md", "new file.md", "b.md", "img/x.png"], "porcelain paths (rename source skipped, spaces kept)")
+            expectEqual(changes.map(\.label), ["Modified", "Added", "Renamed", "Untracked"], "porcelain labels")
+            let log = Git.parseLog("abc\u{1f}Ada Lovelace\u{1f}1700000000\u{1f}Fix: a | b\u{1e}\ndef\u{1f}Bob\u{1f}1600000000\u{1f}Init\u{1e}\n")
+            expectEqual(log.count, 2, "two log entries")
+            expectEqual(log.first?.author, "Ada Lovelace", "log author")
+            expectEqual(log.first?.subject, "Fix: a | b", "log subject keeps separators")
+            expectEqual(log.first?.date, Date(timeIntervalSince1970: 1_700_000_000), "log date")
+            let counts = GitPublisher.lineCounts("--- a/x\n+++ b/x\n@@ -1 +1,2 @@\n-old\n+new\n+more\n")
+            expect(counts.added == 2 && counts.removed == 1, "diff line counts ignore file headers")
+            expectEqual(GitPublisher.suggestedMessage(for: [GitChange(path: "docs/README.md", code: " M")]), "Update README.md", "message for one file")
+            expectEqual(GitPublisher.suggestedMessage(for: [GitChange(path: "a.md", code: "A "), GitChange(path: "b.png", code: "A ")]), "Add 2 files", "message for added files")
+        }
+
+        // Git: a real repository (skipped when git is not installed)
+        if let git = Git.installed {
+            let fm = FileManager.default
+            let base = fm.temporaryDirectory.appendingPathComponent("marka-git-\(UUID().uuidString)")
+            let repo = base.appendingPathComponent("repo")
+            let remote = base.appendingPathComponent("remote.git")
+            try? fm.createDirectory(at: repo, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: base) }
+            func setUp(_ dir: URL) {
+                git.run(["init", "-q", "-b", "main"], in: dir)
+                git.run(["config", "user.name", "Marka Test"], in: dir)
+                git.run(["config", "user.email", "test@example.invalid"], in: dir)
+                git.run(["config", "commit.gpgsign", "false"], in: dir)
+            }
+            setUp(repo)
+            let doc = repo.appendingPathComponent("notes/doc.md")
+            try? fm.createDirectory(at: doc.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? Data("# Notes\n".utf8).write(to: doc)
+            let root = git.repositoryRoot(containing: doc)
+            expect(root != nil, "repository root found")
+            let r = root ?? repo
+            expectEqual(Git.relativePath(of: doc, root: r), "notes/doc.md", "relative path resolves /var → /private/var")
+            expect(!git.isTracked(doc, root: r), "new file is not tracked yet")
+            expect(git.repositoryRoot(containing: base.appendingPathComponent("elsewhere.md")) == nil, "outside a repository")
+            git.add(["notes/doc.md"], root: r)
+            expect(git.isTracked(doc, root: r), "added file is tracked")
+            expectEqual(git.changes(["notes/doc.md"], root: r).first?.label, "Added", "added file shows as Added")
+            expect(git.diff("notes/doc.md", root: r).contains("+# Notes"), "diff of a new file without HEAD")
+
+            // No origin: Publish only commits.
+            let first = GitPublisher.publish(git: git, root: r, paths: ["notes/doc.md"], message: "Add notes")
+            if case .committedOnly = first {} else { expect(false, "without origin Publish only commits — got \(first)") }
+            expectEqual(git.recentCommits(root: r).first?.subject, "Add notes", "commit is in the log")
+            expectEqual(git.recentCommits(root: r).first?.author, "Marka Test", "commit author")
+            expect(git.changes(["notes/doc.md"], root: r).isEmpty, "no changes after commit")
+
+            // With origin: commit + push (sets upstream on the first push).
+            try? fm.createDirectory(at: remote, withIntermediateDirectories: true)
+            git.run(["init", "-q", "--bare", "-b", "main"], in: remote)
+            git.run(["remote", "add", "origin", remote.path], in: r)
+            try? Data("# Notes\nMore.\n".utf8).write(to: doc)
+            let other = repo.appendingPathComponent("other.md")
+            try? Data("staged elsewhere\n".utf8).write(to: other)
+            git.add(["other.md"], root: r)
+            let snapshot = GitPublisher.snapshot(git: git, root: r, files: [doc])
+            expectEqual(snapshot.changes.map(\.path), ["notes/doc.md"], "snapshot lists only the given files")
+            expect(snapshot.hasOrigin && snapshot.branch == "main", "snapshot sees origin and branch")
+            expect(snapshot.diffs["notes/doc.md"]?.contains("+More.") == true, "snapshot diff")
+            let second = GitPublisher.publish(git: git, root: r, paths: ["notes/doc.md"], message: "More notes")
+            if case .pushed = second {} else { expect(false, "with origin Publish pushes — got \(second.log)") }
+            let remoteLog = git.run(["log", "-1", "--format=%s", "main"], in: remote).output.trimmingCharacters(in: .whitespacesAndNewlines)
+            expectEqual(remoteLog, "More notes", "commit reached the remote")
+            expectEqual(git.changes(["other.md"], root: r).first?.code, "A ", "other staged work stays staged, uncommitted")
+
+            // Publish tracks files the documents link to (inside the repository, not ignored).
+            do {
+                let picture = repo.appendingPathComponent("assets/photo.png")
+                try? fm.createDirectory(at: picture.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? Data([0x89, 0x50]).write(to: picture)
+                let secret = repo.appendingPathComponent("secret.txt")
+                try? Data("x".utf8).write(to: secret)
+                try? Data("secret.txt\n".utf8).write(to: repo.appendingPathComponent(".gitignore"))
+                let outside = base.appendingPathComponent("outside.md")
+                try? Data("x".utf8).write(to: outside)
+                let added = GitPublisher.trackLinkedFiles(git: git, root: r, files: [picture, secret, outside, doc])
+                expectEqual(added, ["assets/photo.png"], "only the untracked, not-ignored file inside the repository is added")
+                expect(git.isTracked(picture, root: r) && !git.isTracked(secret, root: r), "linked file tracked, ignored one not")
+                git.run(["rm", "-q", "--cached", "assets/photo.png"], in: r)
+                try? fm.removeItem(at: repo.appendingPathComponent(".gitignore"))
+                try? fm.removeItem(at: secret)
+                try? fm.removeItem(at: picture)
+            }
+
+            // Push failure: the commit stays, the outcome carries git's log.
+            git.run(["remote", "set-url", "origin", base.appendingPathComponent("missing.git").path], in: r)
+            try? Data("# Notes\nMore.\nEven more.\n".utf8).write(to: doc)
+            let third = GitPublisher.publish(git: git, root: r, paths: ["notes/doc.md"], message: "Third")
+            if case .pushFailed(let log) = third {
+                expect(log.contains("$ git push"), "failure log shows the push command")
+            } else {
+                expect(false, "unreachable origin → pushFailed — got \(third)")
+            }
+            expectEqual(git.recentCommits(root: r).first?.subject, "Third", "commit kept when push fails")
+            expectEqual(git.recentCommits(root: r, count: 3).count, 3, "last three commits")
+
+            // Commit failure: nothing to commit.
+            let fourth = GitPublisher.publish(git: git, root: r, paths: ["notes/doc.md"], message: "Nothing")
+            if case .commitFailed = fourth {} else { expect(false, "nothing to commit → commitFailed — got \(fourth)") }
+
+            // Newer published version: another clone pushes, this one sees and fast-forwards.
+            do {
+                let hub = base.appendingPathComponent("hub.git")
+                let mine = base.appendingPathComponent("mine")
+                let theirs = base.appendingPathComponent("theirs")
+                try? fm.createDirectory(at: hub, withIntermediateDirectories: true)
+                git.run(["init", "-q", "--bare", "-b", "main"], in: hub)
+                try? fm.createDirectory(at: mine, withIntermediateDirectories: true)
+                setUp(mine)
+                let page = mine.appendingPathComponent("page.md")
+                try? Data("v1\n".utf8).write(to: page)
+                git.run(["add", "page.md"], in: mine)
+                git.run(["commit", "-q", "-m", "v1"], in: mine)
+                git.run(["remote", "add", "origin", hub.path], in: mine)
+                git.run(["push", "-q", "-u", "origin", "main"], in: mine)
+                expect(GitUpdater.check(git: git, file: page) == nil, "up to date → no update")
+                git.run(["clone", "-q", hub.path, theirs.path], in: base)
+                git.run(["config", "user.name", "Other Author"], in: theirs)
+                git.run(["config", "user.email", "other@example.invalid"], in: theirs)
+                git.run(["config", "commit.gpgsign", "false"], in: theirs)
+                try? Data("v2 from elsewhere\n".utf8).write(to: theirs.appendingPathComponent("page.md"))
+                git.run(["commit", "-q", "-am", "Second version"], in: theirs)
+                git.run(["push", "-q"], in: theirs)
+                let update = GitUpdater.check(git: git, file: page)
+                expectEqual(update?.commits.count, 1, "one newer published commit")
+                expectEqual(update?.commits.first?.author, "Other Author", "who published it")
+                expectEqual(update?.upstream, "origin/main", "upstream name")
+                expect((try? String(contentsOf: page, encoding: .utf8)) == "v1\n", "check alone never changes the file")
+                if let update {
+                    expect(GitUpdater.update(git: git, root: update.root).ok, "fast-forward update succeeds")
+                }
+                expectEqual(try? String(contentsOf: page, encoding: .utf8), "v2 from elsewhere\n", "file updated to the published version")
+                expect(GitUpdater.check(git: git, file: page) == nil, "up to date after the update")
+                // Diverged: a local commit and a newer published one → update refuses, file untouched.
+                try? Data("local\n".utf8).write(to: mine.appendingPathComponent("other.md"))
+                git.run(["add", "other.md"], in: mine)
+                git.run(["commit", "-q", "-m", "Local"], in: mine)
+                try? Data("v3\n".utf8).write(to: theirs.appendingPathComponent("page.md"))
+                git.run(["commit", "-q", "-am", "Third version"], in: theirs)
+                git.run(["push", "-q"], in: theirs)
+                if let diverged = GitUpdater.check(git: git, file: page) {
+                    let result = GitUpdater.update(git: git, root: diverged.root)
+                    expect(!result.ok && result.log.contains("merge --ff-only"), "diverged branch → update fails with a log")
+                } else {
+                    expect(false, "diverged branch still reports the newer version")
+                }
+                expectEqual(try? String(contentsOf: page, encoding: .utf8), "v2 from elsewhere\n", "failed update leaves the file")
+                expect(GitUpdater.check(git: git, file: repo.appendingPathComponent("notes/doc.md")) == nil, "no upstream → no check")
+            }
+        } else {
+            print("SKIP git tests: git is not installed")
         }
 
         if failed > 0 {

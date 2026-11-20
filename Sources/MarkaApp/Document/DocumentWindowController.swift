@@ -27,6 +27,18 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     private var tableButton: NSButton?
     private var findButton: NSButton?
     private var findPopover: NSPopover?
+    private var publishButton: NSButton?
+    private var navigationPopover: NSPopover?
+    private var overviewButton: NSButton?
+
+    @objc func overviewToolbarAction(_ sender: Any?) { showNavigationOverview(from: sender as? NSView) }
+    /// View → Go to Content… (⌘L)
+    @objc func goToContentAction() { showNavigationOverview(from: nil) }
+    private var publishPopover: NSPopover?
+    private(set) var publishController: PublishViewController?
+    /// Repository root while this document is tracked by git (Publish is enabled); nil otherwise.
+    private(set) var gitRoot: URL?
+    private var didCheckPublishedUpdate = false
     private lazy var findController: FindReplaceViewController = {
         let controller = FindReplaceViewController()
         controller.target = self
@@ -35,10 +47,12 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     private var findHighlights: [NSRange] = []
     private var headingPopup: NSPopUpButton?
     private var codePopup: NSPopUpButton?
+    private var effectsPopup: NSPopUpButton?
     private var formatButtons: [NSToolbarItem.Identifier: NSButton] = [:]
     private var actionItems: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
     private var settingsController: SettingsWindowController?
     private var tablePickerPopover: NSPopover?
+    private var insertPopover: NSPopover?
     private var isRefreshingToolbar = false
     private static let sidebarOpenWidth: CGFloat = 160
     /// Below ~140 pt the toolbar pushes the thumbnails toggle (it shares the pane with the window
@@ -107,6 +121,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         scroll.postsFrameChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(editorFrameChanged), name: NSView.frameDidChangeNotification, object: scroll)
         NotificationCenter.default.addObserver(self, selector: #selector(syncTabBar), name: NSWindow.didBecomeKeyNotification, object: window)
+        NotificationCenter.default.addObserver(self, selector: #selector(windowBecameKey), name: NSWindow.didBecomeKeyNotification, object: window)
         scroll.contentView.postsBoundsChangedNotifications = true
         scroll.minMagnification = 0.25
         scroll.maxMagnification = 4
@@ -146,6 +161,112 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         canvas.documentDirectory = document.fileURL?.deletingLastPathComponent()
         window?.representedURL = document.fileURL
         refreshStatus()
+        refreshGitState()
+        checkForPublishedUpdate()
+    }
+
+    // MARK: - Newer published version (git)
+
+    /// Once per opened document: fetch in the background and, when the upstream has commits that
+    /// change this file, offer to update (or update right away — Settings → Git).
+    func checkForPublishedUpdate() {
+        let settings = SettingsStore.shared.current
+        guard !didCheckPublishedUpdate, settings.gitEnabled, settings.checkPublishedUpdates,
+              let git = Git.installed, let url = (document as? MarkdownDocument)?.fileURL else { return }
+        didCheckPublishedUpdate = true
+        GitService.networkQueue.async { [weak self] in
+            guard let update = GitUpdater.check(git: git, file: url) else { return }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.offerPublishedUpdate(update) }
+            }
+        }
+    }
+
+    func offerPublishedUpdate(_ update: PublishedUpdate) {
+        if SettingsStore.shared.current.autoUpdatePublished {
+            applyPublishedUpdate(update)
+            return
+        }
+        guard let window else { return }
+        let texts = Self.publishedUpdateTexts(update, name: (document as? MarkdownDocument)?.displayName)
+        let alert = NSAlert()
+        alert.messageText = texts.title
+        alert.informativeText = texts.text
+        alert.addButton(withTitle: "Yes")
+        alert.addButton(withTitle: "No")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            MainActor.assumeIsolated { self?.applyPublishedUpdate(update) }
+        }
+    }
+
+    static func publishedUpdateTexts(_ update: PublishedUpdate, name: String?) -> (title: String, text: String) {
+        let file = name ?? (update.path as NSString).lastPathComponent
+        var text = ""
+        if let latest = update.commits.first {
+            let formatter = RelativeDateTimeFormatter()
+            formatter.dateTimeStyle = .named
+            let now = Date()
+            text = "\(latest.author) published “\(latest.subject)” \(formatter.localizedString(for: min(latest.date, now), relativeTo: now))."
+            if update.commits.count > 1 { text += " There are \(update.commits.count) newer changes to this file." }
+            text += "\n\n"
+        }
+        text += "Update to the newest version from \(update.upstream)?"
+        return ("A newer version of “\(file)” has been published", text)
+    }
+
+    /// Saves the repository's open documents, fast-forwards to the upstream, then loads the new
+    /// files (also with auto-load off).
+    func applyPublishedUpdate(_ update: PublishedUpdate) {
+        guard let git = Git.installed else { return }
+        let root = update.root
+        Self.save(Self.documents(in: root)) { [weak self] in
+            GitService.queue.async {
+                let result = GitUpdater.update(git: git, root: root)
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        if result.ok {
+                            for document in Self.documents(in: root) { document.checkForExternalChange(force: true) }
+                        } else {
+                            PublishFailureAlert.present(
+                                title: "Update could not be done",
+                                text: "Git could not bring your copy up to date — you may have unpublished commits or edits that conflict with the newer version. Fix the problem with an external Git tool (for example Terminal, GitHub Desktop or Tower).",
+                                log: result.log,
+                                on: self?.window
+                            )
+                        }
+                        self?.refreshGitState()
+                    }
+                }
+            }
+        }
+    }
+
+    /// Back in Marka: pick up file changes the watcher may have missed, and git changes made
+    /// elsewhere (a file became tracked, the repository was removed).
+    @objc private func windowBecameKey() {
+        (document as? MarkdownDocument)?.checkForExternalChange()
+        refreshGitState()
+    }
+
+    /// Replaces the text with `string` (the file changed on disk) as one minimal, undoable edit,
+    /// so the view and caret stay where they were.
+    func reloadMarkdown(_ string: String) {
+        let old = textView.string as NSString
+        let new = string as NSString
+        let changed = MarkdownTextView.changedRange(old: old, new: new)
+        let delta = new.length - old.length
+        var caret = textView.selectedRange()
+        if caret.location >= NSMaxRange(changed) {
+            caret.location += delta
+        } else if caret.location > changed.location {
+            caret.location = changed.location + changed.length + delta
+        }
+        caret.location = min(max(0, caret.location), new.length)
+        caret.length = min(caret.length, new.length - caret.location)
+        textView.applyEdit(EditResult(text: string, selected: caret))
+        refreshThumbnails(debounce: true)
+        refreshStatus()
     }
 
     func setMarkdown(_ string: String) {
@@ -166,6 +287,70 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     }
 
     func markdownString() -> String { textView.string }
+
+    var trackedRoot: URL? { gitRoot }
+    var documentFileURL: URL? { (document as? MarkdownDocument)?.fileURL }
+
+    func markdownTextView(_ view: MarkdownTextView, openAnchor anchor: String) {
+        if let heading = MarkdownSyntax.heading(forAnchor: anchor, in: textView.string) {
+            navigate(to: heading.location)
+        } else {
+            NSSound.beep()
+        }
+    }
+
+    /// Quick navigation: caret to `location`, its line near the top of the visible area.
+    func navigate(to location: Int) {
+        window?.makeFirstResponder(textView)
+        textView.setSelectedRange(NSRange(location: min(location, (textView.string as NSString).length), length: 0))
+        let y = textView.frame.minY + canvas.caretY(at: location) - 24
+        let clip = scroll.contentView
+        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: max(0, min(y, canvas.frame.height - clip.bounds.height))))
+        scroll.reflectScrolledClipView(clip)
+        refreshStatus()
+    }
+
+    /// Page popover → overview: headings and files, picking one goes there.
+    func showNavigationOverview(from anchor: NSView? = nil) {
+        infoPopover?.close()
+        if navigationPopover?.isShown == true {
+            navigationPopover?.close()
+            return
+        }
+        let controller = DocumentOverviewViewController(
+            headings: MarkdownSyntax.headingAnchors(in: textView.string),
+            files: documentDirectory.map { DocumentOverviewViewController.linkableFiles(in: $0, excluding: documentFileURL) } ?? [],
+            navigation: true
+        )
+        let popover = NSPopover()
+        popover.contentViewController = controller
+        popover.behavior = .transient
+        popover.contentSize = DocumentOverviewViewController.size
+        controller.popover = popover
+        controller.onPick = { [weak self, weak popover] item in
+            popover?.performClose(nil)
+            switch item {
+            case .heading(let anchor): self?.navigate(to: anchor.location)
+            case .file(let url, _):
+                if Hyperlink.markdownExtensions.contains(url.pathExtension.lowercased()) {
+                    NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, _ in }
+                } else {
+                    NSWorkspace.shared.open(url)
+                }
+            case .section: break
+            }
+        }
+        navigationPopover = popover
+        if let anchor, anchor.window != nil {
+            popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+        } else if let button = overviewButton, button.window != nil {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        } else if let button = pageButton, button.window != nil {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        } else if let content = window?.contentView {
+            popover.show(relativeTo: NSRect(x: content.bounds.midX, y: content.bounds.maxY - 60, width: 1, height: 1), of: content, preferredEdge: .minY)
+        }
+    }
 
     var documentDirectory: URL? {
         (document as? MarkdownDocument)?.fileURL?.deletingLastPathComponent()
@@ -221,6 +406,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     }
 
     func markdownTextViewDidChangeSelection(_ view: MarkdownTextView) {
+        canvas.hideImageCard()
         canvas.refreshLinkCard()
         refreshFormatToolbar()
         refreshInfoPopover()
@@ -308,13 +494,14 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
             .sidebar, .sidebarTrackingSeparator,
-            .heading, .bold, .italic, .strike, .lists, .link, .code, .table, .image,
-            .flexibleSpace, .pageInfo, .undo, .redo, .find, .share, .print, .zoom, .exportPDF
+            .heading, .bold, .italic, .strike, .effects, .lists, .link, .code, .table, .image,
+            .flexibleSpace, .pageInfo, .overview, .undo, .redo, .find, .share, .publish, .print, .zoom, .exportPDF
         ]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        toolbarAllowedItemIdentifiers(toolbar)
+        // Publish only appears with Git integration on (and git installed).
+        toolbarAllowedItemIdentifiers(toolbar).filter { $0 != .publish || SettingsStore.shared.current.gitEnabled }
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
@@ -361,6 +548,32 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
             return toggleItem(itemIdentifier, title: "Italic", symbol: "italic", action: #selector(italicAction))
         case .strike:
             return toggleItem(itemIdentifier, title: "Strike", symbol: "strikethrough", action: #selector(strikeAction))
+        case .effects:
+            // Text effects pull-down next to Strike: Underline, Superscript, Subscript, Keyboard Key.
+            let popup = NSPopUpButton()
+            popup.pullsDown = true
+            popup.bezelStyle = .texturedRounded
+            popup.imagePosition = .imageOnly
+            popup.refusesFirstResponder = true
+            popup.target = self
+            popup.action = #selector(effectsChanged(_:))
+            popup.toolTip = "Text effects"
+            popup.addItem(withTitle: "")
+            popup.item(at: 0)?.image = Self.symbol("textformat", fallback: "textformat")
+            for (title, symbol) in [("Underline", "underline"), ("Superscript", "textformat.superscript"),
+                                    ("Subscript", "textformat.subscript"), ("Keyboard Key", "keyboard")] {
+                popup.addItem(withTitle: title)
+                popup.lastItem?.image = Self.symbol(symbol, fallback: "textformat")
+            }
+            effectsPopup = popup
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.view = popup
+            item.label = "Effects"
+            item.paletteLabel = "Text Effects"
+            item.toolTip = "Underline, superscript, subscript, keyboard key"
+            popup.sizeToFit()
+            popup.frame.size = NSSize(width: max(44, popup.frame.width), height: 24)
+            return item
         case .lists:
             return toggleItem(itemIdentifier, title: "List", symbol: "list.bullet", action: #selector(listAction))
         case .link:
@@ -436,6 +649,22 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
             item.label = "Find"
             item.paletteLabel = "Find"
             return item
+        case .publish:
+            // View-based so the Publish popover anchors under the button.
+            let button = NSButton(
+                image: Self.symbol("paperplane", fallback: "paperplane") ?? NSImage(),
+                target: self,
+                action: #selector(publishAction)
+            )
+            button.bezelStyle = .toolbar
+            button.refusesFirstResponder = true
+            publishButton = button
+            updatePublishButton()
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.view = button
+            item.label = "Publish"
+            item.paletteLabel = "Publish"
+            return item
         case .share:
             // The system share item: AppKit anchors the picker under the button and runs it exactly
             // like Finder / Preview (services, AirDrop, recent people, "Edit Extensions…").
@@ -475,13 +704,34 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
             item.visibilityPriority = .high
             refreshZoomLabel()
             return item
+        case .overview:
+            // Headings and files of the document: quick navigation (same list as the page popover's icon).
+            // Same bordered style and size as Bold / Italic / Strike, so Page + Content read as one group.
+            let button = NSButton(
+                image: NSImage(systemSymbolName: "list.bullet.rectangle", accessibilityDescription: "Content") ?? NSImage(),
+                target: self,
+                action: #selector(overviewToolbarAction(_:))
+            )
+            button.imagePosition = .imageOnly
+            button.bezelStyle = .texturedRounded
+            button.isBordered = true
+            button.frame.size = NSSize(width: 32, height: 24)
+            button.refusesFirstResponder = true
+            button.toolTip = "Content: go to a heading or file (⌘L)"
+            overviewButton = button
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.view = button
+            item.label = "Content"
+            item.paletteLabel = "Content"
+            item.visibilityPriority = .high
+            return item
         case .pageInfo:
             let button = PageNumberButton(target: self, action: #selector(showDocumentInfo(_:)))
             pageButton = button
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.view = button
             item.label = "Page"
-            item.paletteLabel = "Page & Document Info"
+            item.paletteLabel = "Page"
             item.toolTip = "Page number — click for document info"
             item.visibilityPriority = .high
             return item
@@ -602,6 +852,13 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         formatButtons[.lists]?.isEnabled = available.lists
         formatButtons[.link]?.isEnabled = available.link
         codePopup?.isEnabled = available.inlineCode || available.codeBlock
+        // Effects: checkmarks on the active ones; the pull-down's button is highlighted when any is.
+        let effects = [format.underline, format.superscript, format.`subscript`, format.keyboard]
+        if let popup = effectsPopup {
+            for (index, on) in effects.enumerated() { popup.item(at: index + 1)?.state = on ? .on : .off }
+            popup.isEnabled = available.inline
+            popup.contentTintColor = effects.contains(true) ? .controlAccentColor : nil
+        }
         actionItems[.table]?.isEnabled = available.table
         tableButton?.isEnabled = available.table
         actionItems[.image]?.isEnabled = available.image
@@ -670,6 +927,21 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     var testZoomMode: String { SettingsStore.shared.current.zoomMode }
     var testMagnification: CGFloat { scroll.magnification }
     var testCanvasWidth: CGFloat { canvas.bounds.width }
+    var testCanvas: PagedEditorView { canvas }
+
+    /// Command-line export: the text with its folder (for images), no document — so no git checks,
+    /// no file watching — and the window is never shown or moved.
+    func loadForExport(_ markdown: String, directory: URL) {
+        canvas.documentDirectory = directory
+        setMarkdown(markdown)
+        canvas.relayout()
+    }
+    var testToolbarIdentifiers: [String] { window?.toolbar?.items.map(\.itemIdentifier.rawValue) ?? [] }
+    func testOpenOverviewFromToolbar() -> Bool {
+        overviewToolbarAction(overviewButton)
+        return navigationPopover?.isShown == true
+    }
+    var testFindController: FindReplaceViewController { findController }
     var testScrollWidth: CGFloat { scroll.bounds.width }
     var testLinkCardVisible: Bool { canvas.isLinkCardVisible }
     var testLinkCardURL: String { canvas.linkCardURL }
@@ -1129,6 +1401,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         scroll.contentView.backgroundColor = canvasColor
         textView.applyStyles()
         applyPageControlVisibility()
+        applyPublishVisibility()
         applyZoomFromSettings(persist: false, keepingTop: top)
         refreshStatus()
     }
@@ -1178,9 +1451,146 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
             toolbar.removeItem(at: index)
             pageButton = nil
         } else if show, index == nil {
-            let before = toolbar.items.firstIndex { $0.itemIdentifier == .undo } ?? toolbar.items.count
+            let before = toolbar.items.firstIndex { $0.itemIdentifier == .overview }
+                ?? toolbar.items.firstIndex { $0.itemIdentifier == .undo } ?? toolbar.items.count
             toolbar.insertItem(withItemIdentifier: .pageInfo, at: before)
             refreshStatus()
+        }
+    }
+
+    /// Adds or removes the toolbar Publish button to match Settings → Git.
+    private func applyPublishVisibility() {
+        guard let toolbar = window?.toolbar else { return }
+        let show = SettingsStore.shared.current.gitEnabled
+        let index = toolbar.items.firstIndex { $0.itemIdentifier == .publish }
+        if !show, let index {
+            toolbar.removeItem(at: index)
+            publishButton = nil
+        } else if show, index == nil {
+            let after = toolbar.items.firstIndex { $0.itemIdentifier == .share }.map { $0 + 1 }
+            toolbar.insertItem(withItemIdentifier: .publish, at: after ?? toolbar.items.count)
+        }
+        refreshGitState()
+    }
+
+    // MARK: - Publish (git)
+
+    /// Looks up (off the main thread) whether git tracks this document; Publish follows it.
+    func refreshGitState() {
+        guard let url = (document as? MarkdownDocument)?.fileURL, SettingsStore.shared.current.gitEnabled else {
+            gitRoot = nil
+            updatePublishButton()
+            return
+        }
+        GitService.trackedRoot(of: url) { [weak self] root in
+            self?.gitRoot = root
+            self?.updatePublishButton()
+        }
+    }
+
+    private func updatePublishButton() {
+        publishButton?.isEnabled = gitRoot != nil
+        publishButton?.toolTip = gitRoot != nil
+            ? "Publish: commit and push the open documents of “\(gitRoot!.lastPathComponent)”"
+            : "Publish is available when the document is tracked by Git"
+    }
+
+    /// Saves every open document of the repository, collects their changes off the main thread,
+    /// then shows the Publish popover.
+    @objc func publishAction() {
+        gatherPublishSnapshot { [weak self] snapshot in self?.showPublishPopover(snapshot) }
+    }
+
+    /// Saves, tracks linked files, and collects what Publish will commit.
+    func gatherPublishSnapshot(_ completion: @escaping @MainActor (PublishSnapshot) -> Void) {
+        guard let root = gitRoot, let git = Git.installed else { return }
+        var documents = Self.documents(in: root)
+        // The document whose Publish was clicked always takes part.
+        if let own = document as? MarkdownDocument, !documents.contains(where: { $0 === own }) { documents.append(own) }
+        Self.save(documents) {
+            let files = documents.compactMap(\.fileURL) + NewFiles.shared.all()
+            // Files the documents link to (or show as images) inside this repository start being
+            // tracked now, so they are published with the documents that reference them.
+            let linked = documents.flatMap { document in
+                Hyperlink.linkedFiles(in: document.editorString(), relativeTo: document.fileURL?.deletingLastPathComponent())
+            }
+            GitService.queue.async {
+                GitPublisher.trackLinkedFiles(git: git, root: root, files: linked)
+                let tracked = (files + linked).filter { git.isTracked($0, root: root) }
+                let snapshot = GitPublisher.snapshot(git: git, root: root, files: tracked)
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { completion(snapshot) }
+                }
+            }
+        }
+    }
+
+    /// Open Marka documents whose file lies in the work tree at `root`.
+    private static func documents(in root: URL) -> [MarkdownDocument] {
+        NSDocumentController.shared.documents.compactMap { $0 as? MarkdownDocument }.filter { document in
+            guard let url = document.fileURL else { return false }
+            return Git.relativePath(of: url, root: root) != nil
+        }
+    }
+
+    private static func save(_ documents: [MarkdownDocument], then completion: @escaping @MainActor () -> Void) {
+        var remaining = documents.count
+        guard remaining > 0 else { return completion() }
+        for document in documents {
+            document.saveForPublish {
+                remaining -= 1
+                if remaining == 0 { completion() }
+            }
+        }
+    }
+
+    func showPublishPopover(_ snapshot: PublishSnapshot) {
+        publishPopover?.close()
+        let controller = PublishViewController(snapshot: snapshot)
+        let popover = NSPopover()
+        popover.contentViewController = controller
+        popover.behavior = .transient
+        _ = controller.view
+        popover.contentSize = controller.preferredContentSize
+        controller.onCancel = { [weak popover] in popover?.performClose(nil) }
+        controller.onPublish = { [weak self, weak controller, weak popover] message in
+            guard let self, let controller else { return }
+            popover?.behavior = .applicationDefined   // stays open while git runs
+            controller.setBusy(true)
+            self.runPublish(snapshot: snapshot, message: message) { outcome in
+                controller.setBusy(false)
+                popover?.close()
+                if !outcome.succeeded {
+                    PublishFailureAlert.present(outcome, on: self.window)
+                }
+            }
+        }
+        publishController = controller
+        publishPopover = popover
+        if let button = publishButton, button.window != nil {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        } else if let content = window?.contentView {
+            popover.show(relativeTo: NSRect(x: content.bounds.midX, y: content.bounds.maxY - 60, width: 1, height: 1), of: content, preferredEdge: .minY)
+        }
+    }
+
+    /// Saves pending edits again (the popover may have been open a while), then commits and pushes.
+    func runPublish(snapshot: PublishSnapshot, message: String, completion: @escaping @MainActor (PublishOutcome) -> Void) {
+        guard let git = Git.installed else { return }
+        let root = snapshot.root
+        let paths = snapshot.changes.map(\.path)
+        Self.save(Self.documents(in: root)) {
+            GitService.queue.async {
+                let outcome = GitPublisher.publish(git: git, root: root, paths: paths, message: message)
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        completion(outcome)
+                        for window in NSApp.windows {
+                            (window.windowController as? DocumentWindowController)?.refreshGitState()
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1230,6 +1640,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         controller.onGoToPage = { [weak self] page in
             self?.goToPage(page)
         }
+        controller.onOverview = { [weak self] in self?.showNavigationOverview() }
         infoController = controller
         return controller
     }
@@ -1290,6 +1701,31 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     @objc func boldAction() { if !toggleInCell("**", "**", .strong) { textView.toggleBoldfaceMarkdown(nil) } }
     @objc func italicAction() { if !toggleInCell("*", "*", .emphasis) { textView.toggleItalicsMarkdown(nil) } }
     @objc func strikeAction() { if !toggleInCell("~~", "~~", .strikethrough) { textView.toggleStrikethroughMarkdown(nil) } }
+    // Text effects (GitHub-safe HTML): <ins>, <sup>, <sub>, <kbd>.
+    @objc func underlineAction() { toggleEffect("ins", .underline) }
+    @objc func superscriptAction() { toggleEffect("sup", .superscript) }
+    @objc func subscriptAction() { toggleEffect("sub", .subscript) }
+    @objc func keyboardAction() { toggleEffect("kbd", .keyboard) }
+
+    private func toggleEffect(_ tag: String, _ kind: StyleKind) {
+        if toggleInCell("<\(tag)>", "</\(tag)>", kind) { return }
+        textView.applyEdit(MarkdownEditing.toggleInline(source: textView.string, selected: textView.selectedRange(),
+                                                        left: "<\(tag)>", right: "</\(tag)>", kind: kind))
+    }
+
+    @objc func effectsChanged(_ sender: NSPopUpButton) {
+        guard !isRefreshingToolbar else { return }
+        let index = sender.indexOfSelectedItem
+        sender.selectItem(at: 0)
+        switch index {
+        case 1: underlineAction()
+        case 2: superscriptAction()
+        case 3: subscriptAction()
+        case 4: keyboardAction()
+        default: break
+        }
+    }
+
     @objc func listAction() { textView.applyList(ordered: false, task: false) }
     @objc func orderedListAction() { textView.applyList(ordered: true, task: false) }
     @objc func taskListAction() { textView.applyList(ordered: false, task: true) }
@@ -1351,15 +1787,80 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         popover.contentSize = TableStylePickerView.preferredSize
         popover.behavior = .transient
         tablePickerPopover = popover
-        // Toolbar button → under the button; menu (Format → Insert Table) → at the caret.
-        if let view = (sender as? NSView) ?? (tableButton?.window != nil ? tableButton : nil) {
+        // Toolbar button → under the button; menu (Insert → Table) → at the caret.
+        if let view = sender as? NSView {
             popover.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
         } else {
-            let caret = textView.firstRect(forCharacterRange: textView.selectedRange(), actualRange: nil)
-            let local = textView.window.map { textView.convert($0.convertFromScreen(caret), from: nil) }
-                ?? NSRect(x: 24, y: 24, width: 8, height: 8)
-            popover.show(relativeTo: local.insetBy(dx: 0, dy: -2), of: textView, preferredEdge: .maxY)
+            showAtCaret(popover)
         }
+    }
+
+    /// Shows a popover pointing at the caret (menu commands have no button to anchor to).
+    private func showAtCaret(_ popover: NSPopover) {
+        let caret = textView.firstRect(forCharacterRange: textView.selectedRange(), actualRange: nil)
+        var local = textView.window.map { textView.convert($0.convertFromScreen(caret), from: nil) }
+            ?? NSRect(x: 24, y: 24, width: 8, height: 8)
+        if !textView.visibleRect.intersects(local) {
+            local = NSRect(x: textView.visibleRect.midX, y: textView.visibleRect.minY + 80, width: 1, height: 1)
+        }
+        popover.show(relativeTo: local.insetBy(dx: 0, dy: -2), of: textView, preferredEdge: .maxY)
+    }
+
+    // MARK: - Insert menu galleries
+
+    @objc func insertCodeBlockGallery() { showInsertGallery(.codeBlock) }
+    @objc func insertEquationGallery() { showInsertGallery(.equation) }
+    @objc func insertMatrixGallery() { showInsertGallery(.matrix) }
+    @objc func insertFlowchartGallery() { showInsertGallery(.flowchart) }
+    @objc func insertLeftToRightGallery() { showInsertGallery(.leftToRight) }
+    @objc func insertSequenceGallery() { showInsertGallery(.sequence) }
+    @objc func insertPieGallery() { showInsertGallery(.pie) }
+    @objc func insertNoteAlert() { insertAlert(.note) }
+    @objc func insertTipAlert() { insertAlert(.tip) }
+    @objc func insertImportantAlert() { insertAlert(.important) }
+    @objc func insertWarningAlert() { insertAlert(.warning) }
+    @objc func insertCautionAlert() { insertAlert(.caution) }
+
+    func insertAlert(_ kind: MarkdownAlert.Kind) {
+        window?.makeFirstResponder(textView)
+        textView.applyEdit(MarkdownEditing.insertAlert(source: textView.string, selected: textView.selectedRange(), kind: kind))
+        canvas.relayout()
+    }
+
+    func showInsertGallery(_ kind: InsertKind) {
+        insertPopover?.close()
+        let gallery = makeInsertGallery(kind)
+        let controller = NSViewController()
+        controller.view = gallery
+        let popover = NSPopover()
+        popover.contentViewController = controller
+        popover.contentSize = InsertGalleryView.preferredSize(for: kind)
+        popover.behavior = .transient
+        insertPopover = popover
+        showAtCaret(popover)
+    }
+
+    private func makeInsertGallery(_ kind: InsertKind) -> InsertGalleryView {
+        let gallery = InsertGalleryView(kind: kind, darkPaper: SettingsStore.shared.current.darkPaper)
+        gallery.onPick = { [weak self] template in
+            self?.insertPopover?.performClose(nil)
+            self?.insertPopover = nil
+            self?.insertTemplate(template)
+        }
+        return gallery
+    }
+
+    /// One undoable edit; drawings appear right away (the restyle collapses their source).
+    func insertTemplate(_ template: InsertTemplate) {
+        window?.makeFirstResponder(textView)
+        textView.applyEdit(MarkdownEditing.insertTemplate(source: textView.string, selected: textView.selectedRange(), template: template))
+        canvas.relayout()
+        refreshFormatToolbar()
+    }
+
+    /// Picks tile `index` of `kind`'s gallery exactly as a click would.
+    func testPickInsertTemplate(_ kind: InsertKind, _ index: Int) {
+        makeInsertGallery(kind).pick(index)
     }
 
     private func makeTablePicker() -> TableStylePickerView {
@@ -1385,12 +1886,47 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     func testPickTablePreset(_ index: Int) {
         makeTablePicker().pick(index)
     }
-    @objc func imageAction() { textView.applyImage() }
+    @objc func imageAction() {
+        // In a table cell the image goes into the cell (![alt](path)), not into the text behind it.
+        if let cell = activeCellEditor {
+            let selection = cell.selectedRange()
+            let panel = NSOpenPanel()
+            panel.allowedContentTypes = [.image]
+            panel.allowsMultipleSelection = false
+            panel.canChooseDirectories = false
+            if let directory = documentDirectory { panel.directoryURL = directory }
+            guard panel.runModal() == .OK, let file = panel.url else { return }
+            FileReference.resolve(file, kind: .image, documentDirectory: documentDirectory, trackedRoot: gitRoot, window: window) { [weak self] path in
+                guard let self, let path else { return }
+                self.window?.makeFirstResponder(cell)
+                cell.setSelectedRange(selection)
+                self.insertImageInCell(cell, path: path, alt: file.deletingPathExtension().lastPathComponent)
+            }
+            return
+        }
+        textView.applyImage()
+    }
+
+    /// `![alt](path)` at the cell's caret (inline, so it never starts a new line inside the row).
+    func insertImageInCell(_ cell: NSTextView, path: String, alt: String) {
+        applyToCell(cell) { source, selected in
+            let ns = source as NSString
+            let at = min(selected.location, ns.length)
+            let markup = "![\(alt)](\(path))"
+            let text = ns.replacingCharacters(in: NSRange(location: at, length: min(selected.length, ns.length - at)), with: markup)
+            return EditResult(text: text, selected: NSRange(location: at + (markup as NSString).length, length: 0))
+        }
+    }
+
+    func testInsertImageInCell(path: String, alt: String) {
+        if let cell = activeCellEditor { insertImageInCell(cell, path: path, alt: alt) }
+    }
     @objc func quoteAction() { textView.applyQuote() }
     @objc func ruleAction() { textView.applyRule() }
     @objc func pageBreakAction() { textView.applyPageBreak() }
     @objc func undoAction() {
-        if let editor = window?.fieldEditor(false, for: nil), window?.firstResponder === editor, editor.undoManager?.canUndo == true {
+        // A table cell's field editor (cells use their own `CellFieldEditor`) undoes its own typing.
+        if let editor = window?.firstResponder as? NSTextView, editor !== textView, editor.isFieldEditor, editor.undoManager?.canUndo == true {
             editor.undoManager?.undo()
             return
         }
@@ -1398,7 +1934,8 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     }
 
     @objc func redoAction() {
-        if let editor = window?.fieldEditor(false, for: nil), window?.firstResponder === editor, editor.undoManager?.canRedo == true {
+        // A table cell's field editor (cells use their own `CellFieldEditor`) undoes its own typing.
+        if let editor = window?.firstResponder as? NSTextView, editor !== textView, editor.isFieldEditor, editor.undoManager?.canRedo == true {
             editor.undoManager?.redo()
             return
         }
@@ -1408,6 +1945,11 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
 
     @objc func findAction() { showFindReplace(focusReplace: false) }
     @objc func findAndReplaceAction() { showFindReplace(focusReplace: true) }
+    /// Edit → Replace Emojis…: Find & Replace in emoji mode.
+    @objc func replaceEmojisAction() {
+        showFindReplace(focusReplace: false)
+        findController.startEmojiMode()
+    }
     @objc func findNextAction() { findController.findNext() }
     @objc func findPreviousAction() { findController.findPrevious() }
 
@@ -1780,11 +2322,26 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         shareItems()
     }
 
-    /// File → Share: the standard system Share submenu for this document.
+    /// File → Share: the standard system Share submenu for this document. Chosen from a menu, a
+    /// service has nothing to point at, so its window opened in a random place; this picker's
+    /// delegate anchors it under the toolbar's Share button (the toolbar picker is unaffected).
     func makeShareMenuItem() -> NSMenuItem {
         let picker = NSSharingServicePicker(items: shareItems())
+        menuShareAnchor.window = window
+        picker.delegate = menuShareAnchor
+        menuSharePicker = picker
         return picker.standardShareMenuItem
     }
+
+    /// Menu icons: the toolbar's symbols (macOS 14 fallbacks included).
+    static func menuSymbol(_ name: String) -> NSImage? {
+        NSImage(systemSymbolName: name, accessibilityDescription: nil)
+            ?? sonomaFallbackSymbols[name].flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }
+    }
+
+    private var menuSharePicker: NSSharingServicePicker?
+    private let menuShareAnchor = MenuShareAnchor()
+    var testMenuShareAnchorRect: NSRect? { menuShareAnchor.window = window; return menuShareAnchor.anchorOnScreen() }
 
     var testShareToolbarItemIsSystem: Bool {
         window?.toolbar?.items.contains { $0.itemIdentifier == .share && $0 is NSSharingServicePickerToolbarItem } ?? false
@@ -1794,7 +2351,8 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
         #selector(insertTableRowAbove), #selector(insertTableRowBelow),
         #selector(insertTableColumnLeft), #selector(insertTableColumnRight),
         #selector(addTableRow), #selector(addTableColumn),
-        #selector(deleteTableRow), #selector(deleteTableColumn), #selector(deleteTable)
+        #selector(deleteTableRow), #selector(deleteTableColumn), #selector(deleteTable),
+        #selector(alignColumnLeft), #selector(alignColumnCenter), #selector(alignColumnRight)
     ]
 
     var testTableMenuEnabled: Bool {
@@ -1811,6 +2369,9 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     @objc func deleteTableRow() { canvas.deleteTableRow() }
     @objc func deleteTableColumn() { canvas.deleteTableColumn() }
     @objc func deleteTable() { canvas.deleteTable() }
+    @objc func alignColumnLeft() { canvas.alignTableColumn(.left) }
+    @objc func alignColumnCenter() { canvas.alignTableColumn(.center) }
+    @objc func alignColumnRight() { canvas.alignTableColumn(.right) }
 
     @objc func showSettings() {
         if settingsController == nil {
@@ -1820,6 +2381,10 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(publishAction) {
+            menuItem.isHidden = !SettingsStore.shared.current.gitEnabled
+            return gitRoot != nil
+        }
         // Format → Table row/column commands only apply with the cursor in a table cell.
         if let action = menuItem.action, Self.tableEditActions.contains(action) {
             return canvas.isEditingTable
@@ -1841,6 +2406,18 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
             return available.inline
         case #selector(strikeAction):
             menuItem.state = format.strike ? .on : .off
+            return available.inline
+        case #selector(underlineAction):
+            menuItem.state = format.underline ? .on : .off
+            return available.inline
+        case #selector(superscriptAction):
+            menuItem.state = format.superscript ? .on : .off
+            return available.inline
+        case #selector(subscriptAction):
+            menuItem.state = format.`subscript` ? .on : .off
+            return available.inline
+        case #selector(keyboardAction):
+            menuItem.state = format.keyboard ? .on : .off
             return available.inline
         case #selector(codeAction):
             menuItem.state = format.inlineCode ? .on : .off
@@ -1874,8 +2451,16 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate, Mar
              #selector(insertBashCodeBlock),
              #selector(insertPythonCodeBlock),
              #selector(insertSwiftCodeBlock),
-             #selector(insertJSONCodeBlock):
+             #selector(insertJSONCodeBlock),
+             #selector(insertCodeBlockGallery):
             return available.codeBlock
+        case #selector(insertNoteAlert), #selector(insertTipAlert), #selector(insertImportantAlert),
+             #selector(insertWarningAlert), #selector(insertCautionAlert),
+             #selector(insertEquationGallery), #selector(insertMatrixGallery),
+             #selector(insertFlowchartGallery), #selector(insertLeftToRightGallery),
+             #selector(insertSequenceGallery), #selector(insertPieGallery):
+            // Drawn blocks go where a table may go (not inside a fence, table or quote).
+            return available.table
         case #selector(ruleAction):
             return available.rule
         case #selector(pageBreakAction):
@@ -1918,8 +2503,50 @@ extension NSToolbarItem.Identifier {
     static let redo = NSToolbarItem.Identifier("redo")
     static let find = NSToolbarItem.Identifier("find")
     static let share = NSToolbarItem.Identifier("share")
+    static let effects = NSToolbarItem.Identifier("effects")
+    static let overview = NSToolbarItem.Identifier("overview")
+    static let publish = NSToolbarItem.Identifier("publish")
     static let zoom = NSToolbarItem.Identifier("zoom")
     static let exportPDF = NSToolbarItem.Identifier("exportPDF")
     static let pageInfo = NSToolbarItem.Identifier("pageInfo")
     static let print = NSToolbarItem.Identifier("print")
+}
+
+/// Where File → Share's services appear: under the toolbar's Share button (found by its tooltip),
+/// else under the middle of the toolbar.
+@MainActor
+final class MenuShareAnchor: NSObject, @preconcurrency NSSharingServicePickerDelegate, @preconcurrency NSSharingServiceDelegate {
+    weak var window: NSWindow?
+
+    func sharingServicePicker(_ sharingServicePicker: NSSharingServicePicker, delegateFor sharingService: NSSharingService) -> NSSharingServiceDelegate? {
+        self
+    }
+
+    func sharingService(_ sharingService: NSSharingService, sourceFrameOnScreenForShareItem item: Any) -> NSRect {
+        anchorOnScreen() ?? .zero
+    }
+
+    func sharingService(_ sharingService: NSSharingService, sourceWindowForShareItems items: [Any],
+                        sharingContentScope: UnsafeMutablePointer<NSSharingService.SharingContentScope>) -> NSWindow? {
+        window
+    }
+
+    func anchorOnScreen() -> NSRect? {
+        guard let window, let frameView = window.contentView?.superview else { return nil }
+        if let button = Self.find(in: frameView, where: { $0.toolTip == "Share this document" || $0.accessibilityLabel() == "Share" }),
+           button.window != nil, !button.isHiddenOrHasHiddenAncestor {
+            return window.convertToScreen(button.convert(button.bounds, to: nil))
+        }
+        // Fallback: under the middle of the toolbar.
+        let layout = window.contentLayoutRect
+        return window.convertToScreen(NSRect(x: layout.midX - 1, y: layout.maxY, width: 2, height: 2))
+    }
+
+    private static func find(in view: NSView, where match: (NSView) -> Bool) -> NSView? {
+        if match(view) { return view }
+        for subview in view.subviews {
+            if let found = find(in: subview, where: match) { return found }
+        }
+        return nil
+    }
 }

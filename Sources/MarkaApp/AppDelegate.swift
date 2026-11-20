@@ -51,11 +51,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     private func buildMenu() {
+        NSApp.mainMenu = makeMainMenu()
+    }
+
+    func makeMainMenu() -> NSMenu {
         let main = NSMenu()
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About Marka", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "About Marka", action: #selector(showAbout), keyEquivalent: "").target = self
         appMenu.addItem(.separator())
         let settings = appMenu.addItem(withTitle: "Settings…", action: #selector(DocumentWindowController.showSettings), keyEquivalent: ",")
         settings.target = nil
@@ -80,8 +84,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         file.addItem(withTitle: "Save", action: #selector(NSDocument.save(_:)), keyEquivalent: "s")
         file.addItem(withTitle: "Save As…", action: #selector(NSDocument.saveAs(_:)), keyEquivalent: "S")
         file.addItem(.separator())
-        file.addItem(withTitle: "Export PDF…", action: #selector(DocumentWindowController.exportPDF), keyEquivalent: "e").keyEquivalentModifierMask = [.command, .shift]
+        let exportPDF = file.addItem(withTitle: "Export PDF…", action: #selector(DocumentWindowController.exportPDF), keyEquivalent: "e")
+        exportPDF.keyEquivalentModifierMask = [.command, .shift]
+        exportPDF.image = DocumentWindowController.menuSymbol("arrow.down.document")
+        exportPDF.showsImage()
         file.addItem(withTitle: "Print…", action: #selector(NSDocument.printDocument(_:)), keyEquivalent: "p")
+        let publish = file.addItem(withTitle: "Publish…", action: #selector(DocumentWindowController.publishAction), keyEquivalent: "")
+        publish.image = DocumentWindowController.menuSymbol("paperplane")
+        publish.showsImage()
         // Replaced by the system Share submenu for the current document each time the menu opens.
         let share = file.addItem(withTitle: "Share", action: nil, keyEquivalent: "")
         share.identifier = Self.shareItemID
@@ -111,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         edit.addItem(withTitle: "Find Next", action: #selector(DocumentWindowController.findNextAction), keyEquivalent: "g")
         edit.addItem(withTitle: "Find Previous", action: #selector(DocumentWindowController.findPreviousAction), keyEquivalent: "G")
         let replace = edit.addItem(withTitle: "Find and Replace…", action: #selector(DocumentWindowController.findAndReplaceAction), keyEquivalent: "f")
+        edit.addItem(withTitle: "Replace Emojis…", action: #selector(DocumentWindowController.replaceEmojisAction), keyEquivalent: "")
         replace.keyEquivalentModifierMask = [.command, .option]
         editItem.submenu = edit
         main.addItem(editItem)
@@ -120,6 +131,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         format.addItem(withTitle: "Bold", action: #selector(DocumentWindowController.boldAction), keyEquivalent: "b")
         format.addItem(withTitle: "Italic", action: #selector(DocumentWindowController.italicAction), keyEquivalent: "i")
         format.addItem(withTitle: "Strikethrough", action: #selector(DocumentWindowController.strikeAction), keyEquivalent: "")
+        format.addItem(withTitle: "Underline", action: #selector(DocumentWindowController.underlineAction), keyEquivalent: "u")
+        format.addItem(withTitle: "Superscript", action: #selector(DocumentWindowController.superscriptAction), keyEquivalent: "")
+        format.addItem(withTitle: "Subscript", action: #selector(DocumentWindowController.subscriptAction), keyEquivalent: "")
+        format.addItem(withTitle: "Keyboard Key", action: #selector(DocumentWindowController.keyboardAction), keyEquivalent: "")
         format.addItem(withTitle: "Inline Code", action: #selector(DocumentWindowController.codeAction), keyEquivalent: "")
         format.addItem(.separator())
         format.addItem(withTitle: "Heading 1", action: #selector(DocumentWindowController.applyHeading1), keyEquivalent: "1").keyEquivalentModifierMask = [.command, .option]
@@ -141,7 +156,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         format.addItem(codeBlockItem)
         format.addItem(withTitle: "Link…", action: #selector(DocumentWindowController.linkAction), keyEquivalent: "k")
         format.addItem(withTitle: "Image…", action: #selector(DocumentWindowController.imageAction), keyEquivalent: "")
-        format.addItem(withTitle: "Insert Table", action: #selector(DocumentWindowController.tableAction(_:)), keyEquivalent: "")
         format.addItem(withTitle: "Horizontal Rule", action: #selector(DocumentWindowController.ruleAction), keyEquivalent: "")
         format.addItem(withTitle: "Page Break", action: #selector(DocumentWindowController.pageBreakAction), keyEquivalent: "")
         format.addItem(.separator())
@@ -155,10 +169,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         table.addItem(withTitle: "Delete Row", action: #selector(DocumentWindowController.deleteTableRow), keyEquivalent: "")
         table.addItem(withTitle: "Delete Column", action: #selector(DocumentWindowController.deleteTableColumn), keyEquivalent: "")
         table.addItem(withTitle: "Delete Table", action: #selector(DocumentWindowController.deleteTable), keyEquivalent: "")
+        table.addItem(.separator())
+        table.addItem(withTitle: "Align Column Left", action: #selector(DocumentWindowController.alignColumnLeft), keyEquivalent: "")
+        table.addItem(withTitle: "Align Column Center", action: #selector(DocumentWindowController.alignColumnCenter), keyEquivalent: "")
+        table.addItem(withTitle: "Align Column Right", action: #selector(DocumentWindowController.alignColumnRight), keyEquivalent: "")
         tableItem.submenu = table
         format.addItem(tableItem)
         formatItem.submenu = format
         main.addItem(formatItem)
+
+        // Insert: each item opens a gallery of examples at the caret (blocks | math | Mermaid).
+        let insertItem = NSMenuItem()
+        let insert = NSMenu(title: "Insert")
+        insert.addItem(withTitle: "Table", action: #selector(DocumentWindowController.tableAction(_:)), keyEquivalent: "")
+        insert.addItem(withTitle: "Image…", action: #selector(DocumentWindowController.imageAction), keyEquivalent: "")
+        insert.addItem(withTitle: "Code Block", action: #selector(DocumentWindowController.insertCodeBlockGallery), keyEquivalent: "")
+        insert.addItem(.separator())
+        insert.addItem(withTitle: "Equation", action: #selector(DocumentWindowController.insertEquationGallery), keyEquivalent: "")
+        insert.addItem(withTitle: "Matrix", action: #selector(DocumentWindowController.insertMatrixGallery), keyEquivalent: "")
+        insert.addItem(.separator())
+        insert.addItem(withTitle: "Flowchart", action: #selector(DocumentWindowController.insertFlowchartGallery), keyEquivalent: "")
+        insert.addItem(withTitle: "Left-to-right flow", action: #selector(DocumentWindowController.insertLeftToRightGallery), keyEquivalent: "")
+        insert.addItem(withTitle: "Sequence Diagram", action: #selector(DocumentWindowController.insertSequenceGallery), keyEquivalent: "")
+        insert.addItem(withTitle: "Pie chart", action: #selector(DocumentWindowController.insertPieGallery), keyEquivalent: "")
+        insert.addItem(.separator())
+        // GitHub alerts: > [!NOTE] … > [!CAUTION]
+        for (title, selector) in [("Note", #selector(DocumentWindowController.insertNoteAlert)), ("Tip", #selector(DocumentWindowController.insertTipAlert)),
+                                  ("Important", #selector(DocumentWindowController.insertImportantAlert)), ("Warning", #selector(DocumentWindowController.insertWarningAlert)),
+                                  ("Caution", #selector(DocumentWindowController.insertCautionAlert))] {
+            insert.addItem(withTitle: title, action: selector, keyEquivalent: "")
+        }
+        insertItem.submenu = insert
+        main.addItem(insertItem)
 
         let viewItem = NSMenuItem()
         let view = NSMenu(title: "View")
@@ -166,6 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         view.addItem(withTitle: "Source Mode", action: #selector(DocumentWindowController.toggleSourceMode), keyEquivalent: "/")
         view.addItem(.separator())
         view.addItem(withTitle: "Go to Page…", action: #selector(DocumentWindowController.showDocumentInfo(_:)), keyEquivalent: "g").keyEquivalentModifierMask = [.command, .option]
+        view.addItem(withTitle: "Go to Content…", action: #selector(DocumentWindowController.goToContentAction), keyEquivalent: "l")
         view.addItem(.separator())
         view.addItem(withTitle: "Auto Zoom", action: #selector(DocumentWindowController.zoomAuto), keyEquivalent: "")
         view.addItem(withTitle: "Zoom In", action: #selector(DocumentWindowController.zoomIn), keyEquivalent: "+")
@@ -187,10 +230,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let helpItem = NSMenuItem()
         let help = NSMenu(title: "Help")
         help.addItem(withTitle: "Marka Help", action: #selector(openHelp), keyEquivalent: "?")
+        help.addItem(withTitle: "Keyboard Shortcuts", action: #selector(openShortcuts), keyEquivalent: "")
         helpItem.submenu = help
         main.addItem(helpItem)
 
-        NSApp.mainMenu = main
+        return main
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -208,9 +252,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.insertItem(item, at: index)
     }
 
-    @objc private func openHelp() {
-        if let url = URL(string: "https://github.com/lubino/marka") {
-            NSWorkspace.shared.open(url)
+    static let projectURL = URL(string: "https://github.com/lubino/marka")!
+
+    /// The standard About panel, with a clickable link to the project on GitHub in its credits.
+    @objc func showAbout() {
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: Self.aboutCredits()])
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    static func aboutCredits() -> NSAttributedString {
+        let center = NSMutableParagraphStyle()
+        center.alignment = .center
+        let small = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        let text = NSMutableAttributedString(string: "A free, native Markdown editor for macOS.\n", attributes: [
+            .font: small, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: center
+        ])
+        text.append(NSAttributedString(string: "github.com/lubino/marka", attributes: [
+            .font: small, .link: projectURL, .paragraphStyle: center
+        ]))
+        return text
+    }
+
+    @objc private func openHelp() { openBundledGuide("Help") }
+    @objc private func openShortcuts() { openBundledGuide("Shortcuts") }
+
+    /// Opens Help.md / Shortcuts.md from the app bundle as a Marka tab. A fresh read-only copy in
+    /// ~/Library/Application Support/Marka/Help keeps the bundle untouched (and up to date after
+    /// updates); without the bundled file (swift run), the GitHub page opens instead.
+    private func openBundledGuide(_ name: String) {
+        guard let source = Bundle.main.url(forResource: name, withExtension: "md") else {
+            if let url = URL(string: "https://github.com/lubino/marka/blob/main/\(name).md") { NSWorkspace.shared.open(url) }
+            return
         }
+        let fm = FileManager.default
+        let folder = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Marka/Help", isDirectory: true)
+        let copy = folder.appendingPathComponent("\(name).md")
+        do {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            if fm.fileExists(atPath: copy.path) {
+                try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: copy.path)
+                try fm.removeItem(at: copy)
+            }
+            try fm.copyItem(at: source, to: copy)
+            try fm.setAttributes([.posixPermissions: 0o444], ofItemAtPath: copy.path)
+        } catch {
+            NSWorkspace.shared.open(source)
+            return
+        }
+        NSDocumentController.shared.openDocument(withContentsOf: copy, display: true) { _, _, error in
+            if let error { NSApp.presentError(error) }
+        }
+    }
+}
+
+extension NSMenuItem {
+    /// macOS 27 decides itself whether menu item images show — and usually hides them (only a few
+    /// standard items like Print or Share keep theirs). `preferredImageVisibility = .visible`
+    /// asks for ours. Set through KVC: the property only exists in the macOS 27 SDK, and CI
+    /// builds with an older one.
+    func showsImage() {
+        let key = "preferredImageVisibility"
+        guard responds(to: NSSelectorFromString("setPreferredImageVisibility:")) else { return }
+        setValue(1, forKey: key)   // NSMenuItemImageVisibilityVisible
+    }
+
+    /// The image visibility AppKit was asked for (nil before macOS 27).
+    var preferredImageVisibilityValue: Int? {
+        responds(to: NSSelectorFromString("preferredImageVisibility")) ? (value(forKey: "preferredImageVisibility") as? Int) : nil
     }
 }

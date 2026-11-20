@@ -214,7 +214,11 @@ enum MermaidRenderer {
             if case .message(let from, let to, let text, _, _) = event, let a = index[from], let b = index[to], a != b {
                 let need = textSize(text, font: font).width + 20
                 let lo = min(a, b), hi = max(a, b)
-                let have = (lo..<hi).reduce(CGFloat(0)) { $0 + gaps[$1] + (widths[$1] + widths[$1 + 1]) / 2 }
+                var have: CGFloat = 0
+                for i in lo..<hi {
+                    let centres: CGFloat = (widths[i] + widths[i + 1]) / 2
+                    have += gaps[i] + centres
+                }
                 if have < need { gaps[lo] += need - have }
             }
         }

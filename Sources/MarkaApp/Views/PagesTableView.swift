@@ -12,6 +12,8 @@ protocol PagesTableDelegate: AnyObject {
     func pagesTableDidChangeFocus(_ view: PagesTableView)
     func pagesTable(_ view: PagesTableView, moveRow from: Int, to: Int)
     func pagesTable(_ view: PagesTableView, moveColumn from: Int, to: Int)
+    /// A picture in a cell was clicked: the cell's source is committed, then the image card opens.
+    func pagesTable(_ view: PagesTableView, clickedImage index: Int, row: Int, column: Int, cellRect: CGRect)
 }
 
 /// Pages-style Markdown table: native grid, row/column headers, one slice per page.
@@ -25,6 +27,8 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
     private(set) var selectedRow = 0
     private(set) var selectedColumn = 0
     var darkPaper = false
+    /// For images in cells (relative paths).
+    var documentDirectory: URL? { (tableDelegate as? PagedEditorView)?.documentDirectory }
 
     static let rowHeight: CGFloat = 28
     static let headerBar: CGFloat = 0
@@ -135,9 +139,56 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
 
     var paginationHeight: CGFloat {
         guard let flow else {
-            return Self.headerBar + CGFloat(visibleRowCount) * Self.rowHeight + Self.bottomPad
+            return Self.headerBar + Self.storageRows(for: block).map { height(of: $0) }.reduce(0, +) + Self.bottomPad
         }
         return max(Self.rowHeight, flow.endY - flow.startY)
+    }
+
+    /// Per storage row: taller where a cell shows a picture.
+    private(set) var rowHeights: [Int: CGFloat] = [:]
+
+    func height(of storageRow: Int) -> CGFloat { rowHeights[storageRow] ?? Self.rowHeight }
+
+    /// Widest picture a column's cells may show.
+    func pictureMaxWidth(_ column: Int) -> CGFloat {
+        max(16, (column < columnWidths.count ? columnWidths[column] : Self.minColumn) - Self.cellPadX * 2)
+    }
+
+    /// Column widths from what cells *show* (text without Markdown, pictures at their size, never
+    /// more than 55 % of the table each), then row heights from the pictures in each row.
+    static func layoutMetrics(block: TableMutator.Block, maxWidth: CGFloat, base: URL?) -> (columns: [CGFloat], rowHeights: [Int: CGFloat]) {
+        let cols = max(1, block.columnCount)
+        var widths = Array(repeating: Self.minColumn, count: cols)
+        let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        let cap = maxWidth * 0.55
+        for row in block.rows.enumerated() where row.offset != 1 {
+            for (c, cell) in row.element.enumerated() where c < cols {
+                let shown = CellMarkdown.attributed(cell, font: font, color: .black, darkPaper: false, base: base,
+                                                    maxPictureWidth: cap - Self.cellPadX * 2)
+                let w = ceil(shown.size().width) + Self.cellPadX * 2
+                widths[c] = max(widths[c], min(w, cap))
+            }
+        }
+        let total = widths.reduce(0, +)
+        if total < maxWidth {
+            let extra = (maxWidth - total) / CGFloat(cols)
+            widths = widths.map { $0 + extra }
+        } else if total > maxWidth {
+            let scale = maxWidth / total
+            widths = widths.map { $0 * scale }
+        }
+        var heights: [Int: CGFloat] = [:]
+        for row in block.rows.indices where row != 1 {
+            var tallest: CGFloat = 0
+            for (c, cell) in block.rows[row].enumerated() where c < cols {
+                for image in CellMarkdown.cellImages(cell.replacingOccurrences(of: "\\|", with: "|"), base: base,
+                                                     maxWidth: max(16, widths[c] - Self.cellPadX * 2)) {
+                    tallest = max(tallest, image.picture?.size.height ?? 0)
+                }
+            }
+            if tallest > 0 { heights[row] = max(Self.rowHeight, tallest + 12) }
+        }
+        return (widths, heights)
     }
 
     var paginationSpacing: CGFloat { flow?.contentHeight ?? paginationHeight }
@@ -171,15 +222,14 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
                 bottomPad: Self.bottomPad
             )
         } else {
-            let rows = (0..<visibleRowCount).map { display in
-                PageLayout.TableFlow.Row(
-                    storageRow: storageRow(forDisplay: display),
-                    y: Self.headerBar + CGFloat(display) * Self.rowHeight,
-                    page: 0,
-                    isRepeatedHeader: false
-                )
+            var y = Self.headerBar
+            let rows = (0..<visibleRowCount).map { display -> PageLayout.TableFlow.Row in
+                let storage = storageRow(forDisplay: display)
+                let row = PageLayout.TableFlow.Row(storageRow: storage, y: y, page: 0, isRepeatedHeader: false, height: height(of: storage))
+                y += height(of: storage)
+                return row
             }
-            let height = Self.headerBar + CGFloat(visibleRowCount) * Self.rowHeight + Self.bottomPad
+            let height = y + Self.bottomPad
             pageSlices = [PageLayout.TablePageSlice(page: 0, rows: rows, y: 0, height: height)]
         }
         while slices.count > pageSlices.count {
@@ -198,25 +248,16 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
     }
 
     private func measureColumns(maxWidth: CGFloat) {
-        let cols = max(1, block.columnCount)
-        var widths = Array(repeating: Self.minColumn, count: cols)
-        let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-        for row in block.rows.enumerated() where row.offset != 1 {
-            for (c, cell) in row.element.enumerated() where c < cols {
-                let text = cell.trimmingCharacters(in: .whitespaces) as NSString
-                let w = text.size(withAttributes: [.font: font]).width + Self.cellPadX * 2
-                widths[c] = max(widths[c], min(w, maxWidth * 0.55))
-            }
-        }
-        let total = widths.reduce(0, +)
-        if total < maxWidth {
-            let extra = (maxWidth - total) / CGFloat(cols)
-            widths = widths.map { $0 + extra }
-        } else if total > maxWidth {
-            let scale = maxWidth / total
-            widths = widths.map { $0 * scale }
-        }
-        columnWidths = widths
+        let metrics = Self.layoutMetrics(block: block, maxWidth: maxWidth, base: documentDirectory)
+        columnWidths = metrics.columns
+        rowHeights = metrics.rowHeights
+    }
+
+    /// From a slice's field: commit the cell, then let the canvas open the image card there.
+    func cellImageClicked(_ field: MarkdownCellField, index: Int) {
+        let row = field.tag / 1000, column = field.tag % 1000
+        let rect = field.convert(field.bounds, to: superview)
+        tableDelegate?.pagesTable(self, clickedImage: index, row: row, column: column, cellRect: rect)
     }
 
     func containsResponder(_ responder: NSResponder?) -> Bool {
@@ -285,7 +326,7 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
             let gripX = -TableGripView.rowSize.width - 8
             rowGrip.frame = CGRect(
                 x: gripX,
-                y: y + (Self.rowHeight - TableGripView.rowSize.height) / 2,
+                y: y + (height(of: selectedRow) - TableGripView.rowSize.height) / 2,
                 width: TableGripView.rowSize.width,
                 height: TableGripView.rowSize.height
             )
@@ -293,7 +334,7 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
             rowGrip.isHidden = !body
             let midX = rowGrip.frame.midX
             place(.rowAbove, centeredAt: CGPoint(x: midX, y: y), visible: body)
-            place(.rowBelow, centeredAt: CGPoint(x: midX, y: y + Self.rowHeight))
+            place(.rowBelow, centeredAt: CGPoint(x: midX, y: y + height(of: selectedRow)))
             place(.deleteRow, centeredAt: CGPoint(x: rowGrip.frame.minX - gap - size / 2, y: rowGrip.frame.midY), visible: body)
         }
         if selectedColumn < columnWidths.count, let piece = slice(showing: selectedRow) {
@@ -339,9 +380,9 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
     func rowDrop(atY y: CGFloat) -> (boundary: Int, target: Int, lineY: CGFloat) {
         let body = Array(2..<max(2, block.rows.count))
         var boundary = block.rows.count
-        var lineY = (primaryY(for: body.last ?? 0) ?? 0) + Self.rowHeight
+        var lineY = (primaryY(for: body.last ?? 0) ?? 0) + height(of: body.last ?? 0)
         for row in body {
-            if let rowY = primaryY(for: row), y < rowY + Self.rowHeight / 2 {
+            if let rowY = primaryY(for: row), y < rowY + height(of: row) / 2 {
                 boundary = row
                 lineY = rowY
                 break
@@ -411,7 +452,7 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
 
     // Testing: simulate grip drags exactly as mouse events would report them.
     func testDragRow(beforeStorageRow target: Int) {
-        guard let y = target < block.rows.count ? primaryY(for: target) : (primaryY(for: block.rows.count - 1)).map({ $0 + Self.rowHeight + 2 }) else { return }
+        guard let y = target < block.rows.count ? primaryY(for: target) : (primaryY(for: block.rows.count - 1)).map({ $0 + height(of: block.rows.count - 1) + 2 }) else { return }
         let start = CGPoint(x: rowGrip.frame.midX, y: rowGrip.frame.midY)
         dragRow(.began, start)
         dragRow(.changed, CGPoint(x: start.x, y: y + 2))
@@ -442,7 +483,7 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
         for (command, button) in buttons where !button.isHidden { visible.insert("\(command)") }
         var ok = true
         if let y = primaryY(for: selectedRow) {
-            if let below = buttons[.rowBelow], !below.isHidden { ok = ok && abs(below.frame.midY - (y + Self.rowHeight)) < 1 }
+            if let below = buttons[.rowBelow], !below.isHidden { ok = ok && abs(below.frame.midY - (y + height(of: selectedRow))) < 1 }
             if let above = buttons[.rowAbove], !above.isHidden { ok = ok && abs(above.frame.midY - y) < 1 }
             if let delete = buttons[.deleteRow], !delete.isHidden { ok = ok && delete.frame.maxX <= rowGrip.frame.minX && abs(delete.frame.midY - rowGrip.frame.midY) < 1 }
         }
@@ -474,7 +515,7 @@ final class PagesTableView: NSView, NSTextFieldDelegate {
         guard isEditingChromeVisible else { return false }
         var ok = true
         if selectedRow >= 2, let y = primaryY(for: selectedRow) {
-            ok = ok && rowGrip.frame.midY > y && rowGrip.frame.midY < y + Self.rowHeight
+            ok = ok && rowGrip.frame.midY > y && rowGrip.frame.midY < y + height(of: selectedRow)
         }
         if selectedColumn < columnWidths.count {
             let x = columnX(selectedColumn)
@@ -792,7 +833,7 @@ private final class TableSliceView: NSView {
 
     func storageRow(atY y: CGFloat) -> Int? {
         spec.rows.first(where: {
-            !$0.isRepeatedHeader && y >= $0.y - spec.y && y <= $0.y - spec.y + PagesTableView.rowHeight
+            !$0.isRepeatedHeader && y >= $0.y - spec.y && y <= $0.y - spec.y + $0.height
         })?.storageRow
     }
 
@@ -850,9 +891,20 @@ private final class TableSliceView: NSView {
                 let cellFont = field.font ?? .systemFont(ofSize: 12)
                 let ink = Theme.bodyColor(darkPaper: darkPaper)
                 let dark = darkPaper
-                field.render = { CellMarkdown.attributed($0, font: cellFont, color: ink, darkPaper: dark) }
+                let alignment = c < block.alignments.count ? block.alignments[c] : .none
+                field.alignment = alignment == .center ? .center : alignment == .right ? .right : .natural
+                let base = parent.documentDirectory
+                // The column's picture width is read when drawing: columns are measured after the
+                // fields exist, so a captured width would be the minimum one.
+                let column = c
+                field.render = { [weak parent] in
+                    TableSliceView.aligned(CellMarkdown.attributed($0, font: cellFont, color: ink, darkPaper: dark, base: base,
+                                                                   maxPictureWidth: parent?.pictureMaxWidth(column) ?? 200), alignment)
+                }
+                field.onImageClick = { [weak parent] cell, index in parent?.cellImageClicked(cell, index: index) }
                 field.allowsEditingTextAttributes = true   // the field editor shows the styled source
-                field.styleEditor = { CellMarkdown.styleSource($0, font: cellFont, color: ink, darkPaper: dark) }
+                field.styleEditor = { CellMarkdown.styleSource($0, font: cellFont, color: ink, darkPaper: dark, base: base,
+                                                                         maxPictureWidth: parent.pictureMaxWidth(column)) }
                 field.baseTypingAttributes = [.font: cellFont, .foregroundColor: ink]
                 field.onFocus = { [weak parent] cell in parent?.cellDidFocus(cell) }
                 field.raw = value.trimmingCharacters(in: .whitespaces)
@@ -877,12 +929,16 @@ private final class TableSliceView: NSView {
                 x += columnWidths[i]
             }
             let w = column < columnWidths.count ? columnWidths[column] : PagesTableView.minColumn
-            field.frame = CGRect(
+            let frame = CGRect(
                 x: x + PagesTableView.cellPadX - 2,
                 y: (row.y - spec.y) + 5,
                 width: max(20, w - PagesTableView.cellPadX * 2 + 4),
-                height: 18
+                height: max(18, row.height - 10)
             )
+            let resized = abs(field.frame.width - frame.width) > 0.5
+            field.frame = frame
+            // A new column width changes picture sizes: re-render (not while the cell is edited).
+            if resized, let cell = field as? MarkdownCellField, !cell.isEditingSource { cell.showRendered() }
         }
     }
 
@@ -903,7 +959,7 @@ private final class TableSliceView: NSView {
         let tableW = max(8, columnWidths.reduce(0, +))
         for row in spec.rows {
             let y = row.y - spec.y
-            let rect = CGRect(x: 0, y: y, width: tableW, height: PagesTableView.rowHeight)
+            let rect = CGRect(x: 0, y: y, width: tableW, height: row.height)
             if Self.isStriped(row.storageRow) {
                 Theme.tableHeaderFill(darkPaper: darkPaper).setFill()
                 rect.fill()
@@ -914,12 +970,23 @@ private final class TableSliceView: NSView {
             let y = row.y - spec.y
             var x: CGFloat = 0
             for w in columnWidths {
-                let cell = NSBezierPath(rect: CGRect(x: x + 0.5, y: y + 0.5, width: w - 1, height: PagesTableView.rowHeight))
+                let cell = NSBezierPath(rect: CGRect(x: x + 0.5, y: y + 0.5, width: w - 1, height: row.height))
                 cell.lineWidth = 1
                 cell.stroke()
                 x += w
             }
         }
+    }
+
+    /// GFM column alignment applied to a cell's text.
+    static func aligned(_ text: NSAttributedString, _ alignment: ColumnAlignment) -> NSAttributedString {
+        guard alignment != .none, text.length > 0 else { return text }
+        let styled = NSMutableAttributedString(attributedString: text)
+        let style = NSMutableParagraphStyle()
+        style.alignment = alignment == .center ? .center : alignment == .right ? .right : .left
+        style.lineBreakMode = .byTruncatingTail
+        styled.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: styled.length))
+        return styled
     }
 
     private func drawRepeatedHeaderText(block: TableMutator.Block) {
@@ -929,10 +996,12 @@ private final class TableSliceView: NSView {
             for c in 0..<max(1, block.columnCount) {
                 let w = c < columnWidths.count ? columnWidths[c] : PagesTableView.minColumn
                 let raw = c < (block.rows.first?.count ?? 0) ? block.rows[0][c] : ""
-                let text = CellMarkdown.attributed(raw, font: font, color: Theme.bodyColor(darkPaper: darkPaper), darkPaper: darkPaper)
+                let text = Self.aligned(CellMarkdown.attributed(raw, font: font, color: Theme.bodyColor(darkPaper: darkPaper), darkPaper: darkPaper,
+                                                                base: parent?.documentDirectory, maxPictureWidth: parent?.pictureMaxWidth(c) ?? 200),
+                                        c < block.alignments.count ? block.alignments[c] : .none)
                 if text.length > 0 {
                     text.draw(
-                        with: CGRect(x: x + PagesTableView.cellPadX, y: row.y - spec.y + 6, width: max(8, w - PagesTableView.cellPadX * 2), height: 16),
+                        with: CGRect(x: x + PagesTableView.cellPadX, y: row.y - spec.y + 6, width: max(8, w - PagesTableView.cellPadX * 2), height: max(16, row.height - 12)),
                         options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine]
                     )
                 }
@@ -954,14 +1023,14 @@ private final class TableSliceView: NSView {
         let tableW = max(8, columnWidths.reduce(0, +))
         for row in spec.rows {
             let y = row.y - spec.y
-            let rect = toPage(CGRect(x: 0, y: y, width: tableW, height: PagesTableView.rowHeight))
+            let rect = toPage(CGRect(x: 0, y: y, width: tableW, height: row.height))
             guard rect.intersects(paper) else { continue }
             (Self.isStriped(row.storageRow) ? Theme.tableHeaderFill(darkPaper: darkPaper) : Theme.paperColor(darkPaper: darkPaper)).setFill()
             rect.fill()
             Theme.tableBorder(darkPaper: darkPaper).setStroke()
             var cx: CGFloat = 0
             for w in columnWidths {
-                NSBezierPath(rect: toPage(CGRect(x: cx + 0.5, y: y + 0.5, width: w - 1, height: PagesTableView.rowHeight))).stroke()
+                NSBezierPath(rect: toPage(CGRect(x: cx + 0.5, y: y + 0.5, width: w - 1, height: row.height))).stroke()
                 cx += w
             }
             let font: NSFont = row.storageRow == 0
@@ -973,13 +1042,15 @@ private final class TableSliceView: NSView {
                 let raw = row.storageRow < block.rows.count && c < block.rows[row.storageRow].count
                     ? block.rows[row.storageRow][c]
                     : ""
-                let text = CellMarkdown.attributed(raw, font: font, color: Theme.bodyColor(darkPaper: darkPaper), darkPaper: darkPaper)
+                let text = Self.aligned(CellMarkdown.attributed(raw, font: font, color: Theme.bodyColor(darkPaper: darkPaper), darkPaper: darkPaper,
+                                                                base: parent?.documentDirectory, maxPictureWidth: parent?.pictureMaxWidth(c) ?? 200),
+                                        c < block.alignments.count ? block.alignments[c] : .none)
                 if text.length > 0 {
                     let cell = toPage(CGRect(
                         x: x + PagesTableView.cellPadX,
                         y: y + 6,
                         width: max(8, w - PagesTableView.cellPadX * 2),
-                        height: 16
+                        height: max(16, row.height - 12)
                     ))
                     text.draw(with: cell, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
                 }

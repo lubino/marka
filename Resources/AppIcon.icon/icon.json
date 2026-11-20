@@ -9,31 +9,21 @@
     {
       "name" : "Wordmark",
       "lighting" : "individual",
-      "specular" : true,
-      "shadow" : { "kind" : "layer-color", "opacity" : 0.5 },
+      "specular" : false,
+      "shadow" : { "kind" : "none", "opacity" : 0 },
       "translucency" : { "enabled" : false, "value" : 0.5 },
       "layers" : [
-        { "name" : "wordmark", "image-name" : "wordmark.svg", "glass" : true, "opacity" : 1.0 }
-      ]
-    },
-    {
-      "name" : "Glass bars",
-      "lighting" : "individual",
-      "specular" : true,
-      "shadow" : { "kind" : "layer-color", "opacity" : 0.5 },
-      "translucency" : { "enabled" : true, "value" : 0.5 },
-      "layers" : [
-        { "name" : "glass-bars", "image-name" : "glass-bars.svg", "glass" : true, "opacity" : 0.6 }
+        { "name" : "wordmark", "image-name" : "wordmark.svg", "glass" : false, "opacity" : 1.0 }
       ]
     },
     {
       "name" : "Bars",
       "lighting" : "individual",
-      "specular" : true,
-      "shadow" : { "kind" : "layer-color", "opacity" : 0.5 },
+      "specular" : false,
+      "shadow" : { "kind" : "none", "opacity" : 0 },
       "translucency" : { "enabled" : false, "value" : 0.5 },
       "layers" : [
-        { "name" : "bars", "image-name" : "bars.svg", "glass" : true, "opacity" : 1.0 }
+        { "name" : "bars", "image-name" : "bars.svg", "glass" : false, "opacity" : 1.0 }
       ]
     }
   ],

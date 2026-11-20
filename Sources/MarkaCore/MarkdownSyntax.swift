@@ -6,6 +6,14 @@ public enum StyleKind: Equatable, Sendable {
     case strong
     case emphasis
     case strikethrough
+    /// `<ins>…</ins>` (also `<u>`) — GitHub's underline.
+    case underline
+    /// `<sup>…</sup>`
+    case superscript
+    /// `<sub>…</sub>`
+    case `subscript`
+    /// `<kbd>…</kbd>` — a keyboard key.
+    case keyboard
     case inlineCode
     /// `$…$` — rendered as math in WYSIWYG.
     case inlineMath
@@ -407,10 +415,8 @@ public enum MarkdownSyntax {
         var end = start
         while end < lines.count {
             let t = lines[end].text.trimmingCharacters(in: .whitespaces)
-            if t.hasPrefix(">") || t.isEmpty && end + 1 < lines.count && lines[end + 1].text.trimmingCharacters(in: .whitespaces).hasPrefix(">") {
-                end += 1
-                continue
-            }
+            // A blank line ends the quote (CommonMark / GitHub): two quotes separated by an
+            // empty line — e.g. two alerts — stay two blocks.
             if t.hasPrefix(">") { end += 1; continue }
             break
         }
@@ -555,10 +561,37 @@ public enum MarkdownSyntax {
     }
 
     static func splitTableCells(_ line: String) -> [String] {
-        var s = line.trimmingCharacters(in: .whitespaces)
-        if s.hasPrefix("|") { s.removeFirst() }
-        if s.hasSuffix("|") { s.removeLast() }
-        return s.split(separator: "|", omittingEmptySubsequences: false).map { String($0) }
+        splitPipes(line)
+    }
+
+    /// Splits a GFM table row on unescaped pipes (`\|` stays inside the cell, as on GitHub);
+    /// leading and trailing pipes are dropped.
+    public static func splitPipes(_ line: String) -> [String] {
+        let chars = Array(line.trimmingCharacters(in: .whitespaces))
+        var cells: [String] = []
+        var current = ""
+        var i = 0
+        while i < chars.count {
+            let ch = chars[i]
+            if ch == "\\", i + 1 < chars.count, chars[i + 1] == "|" {
+                current += "\\|"
+                i += 2
+                continue
+            }
+            if ch == "|" {
+                cells.append(current)
+                current = ""
+            } else {
+                current.append(ch)
+            }
+            i += 1
+        }
+        cells.append(current)
+        if chars.first == "|", !cells.isEmpty { cells.removeFirst() }
+        if line.trimmingCharacters(in: .whitespaces).count > 1, chars.last == "|", chars.count < 2 || chars[chars.count - 2] != "\\", cells.count > 0 {
+            cells.removeLast()
+        }
+        return cells
     }
 
     static func collectParagraph(lines: [Line], start: Int) -> (lines: [Line], next: Int) {
@@ -711,6 +744,31 @@ public enum MarkdownSyntax {
             i = found + 1
         }
 
+        // GitHub-safe HTML text effects: <ins>/<u>, <sup>, <sub>, <kbd>. Only the tags are taken,
+        // so **bold**, `code` and links inside keep working.
+        for (tag, kind) in Self.textEffectTags {
+            let open = "<\(tag)>" as NSString, close = "</\(tag)>" as NSString
+            var p = range.location
+            while p + open.length + close.length <= limit {
+                let found = ns.range(of: open as String, options: .caseInsensitive, range: NSRange(location: p, length: limit - p))
+                guard found.location != NSNotFound else { break }
+                let after = NSMaxRange(found)
+                let end = ns.range(of: close as String, options: .caseInsensitive, range: NSRange(location: after, length: limit - after))
+                guard end.location != NSNotFound else { break }
+                if free(found), free(end), end.location > after {
+                    let group = NSRange(location: found.location, length: NSMaxRange(end) - found.location)
+                    spans.append(StyleSpan(range: found, kind: kind, role: .marker, group: group))
+                    spans.append(StyleSpan(range: NSRange(location: after, length: end.location - after), kind: kind, role: .content, group: group))
+                    spans.append(StyleSpan(range: end, kind: kind, role: .marker, group: group))
+                    mark(found)
+                    mark(end)
+                    p = NSMaxRange(end)
+                } else {
+                    p = after
+                }
+            }
+        }
+
         func delimited(_ marker: String, kind: StyleKind) {
             let m = marker as NSString
             let mlen = m.length
@@ -753,6 +811,11 @@ public enum MarkdownSyntax {
 
         return spans
     }
+
+    /// Tags Marka reads as text effects (lowercase); `<ins>` is what it writes for underline.
+    public static let textEffectTags: [(String, StyleKind)] = [
+        ("ins", .underline), ("u", .underline), ("sup", .superscript), ("sub", .subscript), ("kbd", .keyboard)
+    ]
 
     static func match(_ ns: NSString, at index: Int, marker: NSString) -> Bool {
         let len = marker.length

@@ -18,7 +18,7 @@ final class FindReplaceViewController: NSViewController, NSSearchFieldDelegate, 
     weak var target: FindReplaceTarget?
 
     let findField = NSSearchField()
-    /// Same capsule as the find field (search field without the magnifier) so both rows match.
+    /// Same capsule as the find field (a replace icon in place of the magnifier) so both rows match.
     let replaceField = NSSearchField()
     private let countLabel = NSTextField(labelWithString: "")
     /// ⌃ | ⌄ — previous / next match.
@@ -29,6 +29,10 @@ final class FindReplaceViewController: NSViewController, NSSearchFieldDelegate, 
     static let controlWidth: CGFloat = 132
     private let matchCase = NSButton(checkboxWithTitle: "Match Case", target: nil, action: nil)
     private let wholeWords = NSButton(checkboxWithTitle: "Whole Words", target: nil, action: nil)
+    /// Replace Emojis: jump over `:shortcodes:` and emoticons (`:)`, `<3`) and replace them with emoji.
+    private let emojiBox = NSButton(checkboxWithTitle: "Emoji", target: nil, action: nil)
+    private(set) var emojiMatches: [EmojiCatalog.Match] = []
+    var emojiMode: Bool { emojiBox.state == .on }
 
     private(set) var matches: [NSRange] = []
     private(set) var currentIndex: Int?
@@ -49,7 +53,14 @@ final class FindReplaceViewController: NSViewController, NSSearchFieldDelegate, 
         findField.target = self
         findField.action = #selector(findChanged)
         replaceField.placeholderString = "Replace"
-        (replaceField.cell as? NSSearchFieldCell)?.searchButtonCell = nil   // no magnifier on Replace
+        // Replace gets its own icon where Find has the magnifier, so both texts start at the same
+        // x (without one the text sat on the field's left edge). Decoration only: no action.
+        if let button = (replaceField.cell as? NSSearchFieldCell)?.searchButtonCell {
+            button.image = NSImage(systemSymbolName: "arrow.2.squarepath", accessibilityDescription: "Replace")
+            button.alternateImage = button.image
+            button.target = nil
+            button.action = nil
+        }
         replaceField.sendsWholeSearchString = true
 
         func configure(_ control: NSSegmentedControl, _ segments: [(image: String?, label: String?, tip: String)]) {
@@ -84,11 +95,14 @@ final class FindReplaceViewController: NSViewController, NSSearchFieldDelegate, 
             box.action = #selector(findChanged)
             box.controlSize = .regular
         }
+        emojiBox.target = self
+        emojiBox.action = #selector(emojiModeChanged)
+        emojiBox.toolTip = "Find emoji codes (:smile:, :), <3 …) and replace them with emoji"
         countLabel.textColor = .secondaryLabelColor
         countLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
         countLabel.alignment = .right
-        let options = NSStackView(views: [matchCase, wholeWords])
-        options.spacing = 16
+        let options = NSStackView(views: [matchCase, wholeWords, emojiBox])
+        options.spacing = 12
 
         // Two columns: fields (same width, same left edge) and controls (same width, same right
         // edge); the bottom row holds the options and the match count.
@@ -139,10 +153,39 @@ final class FindReplaceViewController: NSViewController, NSSearchFieldDelegate, 
         search(keepCurrent: false)
     }
 
+    /// Emoji mode: the find field is replaced by the codes found; Replace shows each one's emoji.
+    @objc func emojiModeChanged() {
+        let on = emojiMode
+        findField.isEnabled = !on
+        replaceField.isEnabled = !on
+        matchCase.isEnabled = !on
+        wholeWords.isEnabled = !on
+        findField.placeholderString = on ? ":shortcodes: and :) emoticons" : "Find"
+        replaceField.placeholderString = on ? "Emoji" : "Replace"
+        if on {
+            findField.stringValue = ""
+            replaceField.stringValue = ""
+        }
+        search(keepCurrent: false)
+    }
+
+    /// Edit → Replace Emojis…
+    func startEmojiMode() {
+        _ = view
+        emojiBox.state = .on
+        emojiModeChanged()
+    }
+
     func search(keepCurrent: Bool) {
         guard let target else { return }
         let query = findField.stringValue
-        matches = FindEngine.matches(of: query, in: target.findSource, options: options)
+        if emojiMode {
+            emojiMatches = EmojiCatalog.matches(in: target.findSource)
+            matches = emojiMatches.map(\.range)
+        } else {
+            emojiMatches = []
+            matches = FindEngine.matches(of: query, in: target.findSource, options: options)
+        }
         if matches.isEmpty {
             currentIndex = nil
         } else if keepCurrent, let index = currentIndex, index < matches.count {
@@ -174,15 +217,29 @@ final class FindReplaceViewController: NSViewController, NSSearchFieldDelegate, 
             return
         }
         let range = matches[index]
-        target.replaceFindMatch(range, with: replaceField.stringValue)
+        let replacement = emojiMode && index < emojiMatches.count ? emojiMatches[index].emoji : replaceField.stringValue
+        target.replaceFindMatch(range, with: replacement)
         // Continue after the replaced text.
-        let resume = range.location + (replaceField.stringValue as NSString).length
-        matches = FindEngine.matches(of: findField.stringValue, in: target.findSource, options: options)
+        let resume = range.location + (replacement as NSString).length
+        if emojiMode {
+            emojiMatches = EmojiCatalog.matches(in: target.findSource)
+            matches = emojiMatches.map(\.range)
+        } else {
+            matches = FindEngine.matches(of: findField.stringValue, in: target.findSource, options: options)
+        }
         currentIndex = FindEngine.nextIndex(in: matches, after: resume)
         show()
     }
 
     @objc func replaceAll() {
+        if emojiMode, let target {
+            let result = EmojiCatalog.replaceAll(in: target.findSource)
+            guard result.count > 0 else { return }
+            target.replaceAllFindMatches(with: result.text, count: result.count)
+            search(keepCurrent: false)
+            countLabel.stringValue = "\(result.count) replaced"
+            return
+        }
         guard let target, !findField.stringValue.isEmpty else { return }
         let result = FindEngine.replaceAll(findField.stringValue, with: replaceField.stringValue, in: target.findSource, options: options)
         guard result.count > 0 else { return }
@@ -196,7 +253,11 @@ final class FindReplaceViewController: NSViewController, NSSearchFieldDelegate, 
     private func show() {
         let current = currentIndex.flatMap { $0 < matches.count ? matches[$0] : nil }
         target?.showFindMatches(matches, current: current)
-        if findField.stringValue.isEmpty {
+        if emojiMode {
+            let index = currentIndex ?? 0
+            replaceField.stringValue = index < emojiMatches.count ? "\(emojiMatches[index].code)  →  \(emojiMatches[index].emoji)" : ""
+            countLabel.stringValue = matches.isEmpty ? "No emoji codes" : "\(index + 1) of \(matches.count)"
+        } else if findField.stringValue.isEmpty {
             countLabel.stringValue = ""
         } else if matches.isEmpty {
             countLabel.stringValue = "Not found"
@@ -245,6 +306,15 @@ final class FindReplaceViewController: NSViewController, NSSearchFieldDelegate, 
 
     /// Fields share their left edge and size; the two segmented controls share their right edge
     /// and size; each control is vertically centred on its field.
+    /// Where the typed text starts in each field (field coordinates): Find and Replace must match.
+    var testTextStarts: (find: CGFloat, replace: CGFloat) {
+        _ = view
+        func start(_ field: NSSearchField) -> CGFloat {
+            (field.cell as? NSSearchFieldCell)?.searchTextRect(forBounds: field.bounds).minX ?? 0
+        }
+        return (start(findField), start(replaceField))
+    }
+
     var testLayoutIsAligned: Bool {
         _ = view
         view.frame = NSRect(origin: .zero, size: view.fittingSize)
