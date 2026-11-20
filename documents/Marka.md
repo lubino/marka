@@ -21,7 +21,7 @@ This file is a **hands-on tour**. Everything you read here is a real Markdown fe
 | <img src="assets/icons/print.png" alt="Print" width="18"> | **Print** | Print the pages (<kbd>⌘</kbd> <kbd>P</kbd>) |
 | <img src="assets/icons/pdf.png" alt="PDF" width="18"> | **PDF** | Export a PDF (<kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>E</kbd>) |
 
-**Contents** — click a line, or press <kbd>⌘</kbd> <kbd>L</kbd> for the Content list:
+**Contents** - click a line, or press <kbd>⌘</kbd> <kbd>L</kbd> for the Content list:
 
 1. [Code blocks](#1-code-blocks)
 2. [Settings](#2-settings)
@@ -62,7 +62,7 @@ sw_vers -productVersion
 ls -la
 ```
 
-Python works the same way. This one even asks you a question — type an answer in Terminal:
+Python works the same way. This one even asks you a question - type an answer in Terminal:
 
 ```python
 name = input("What is your name? ")
@@ -232,10 +232,10 @@ Open Settings with <kbd>⌘</kbd> <kbd>,</kbd> (or **Marka → Settings…**). C
 
 ## 3. Writing and formatting
 
-Select some words, then click a toolbar button — or use the shortcut:
+Select some words, then click a toolbar button - or use the shortcut:
 
 - **Bold** with <kbd>⌘</kbd> <kbd>B</kbd>, *italic* with <kbd>⌘</kbd> <kbd>I</kbd>, ~~strikethrough~~ with the **S** button.
-- **Text effects** — the button next to **S**: <ins>underline</ins> (<kbd>⌘</kbd> <kbd>U</kbd>), superscript like E = mc<sup>2</sup>, subscript like H<sub>2</sub>O and keyboard keys like <kbd>⌘</kbd> <kbd>K</kbd>.
+- **Text effects** - the button next to **S**: <ins>underline</ins> (<kbd>⌘</kbd> <kbd>U</kbd>), superscript like E = mc<sup>2</sup>, subscript like H<sub>2</sub>O and keyboard keys like <kbd>⌘</kbd> <kbd>K</kbd>.
 - You can mix them: ***bold and italic***, **bold with `code`**, *italic [link](#3-writing-and-formatting)*.
 - Click a button again to remove the formatting.
 
@@ -251,7 +251,7 @@ The **Heading** menu in the toolbar (or <kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>1</kb
 
 ### Lists
 
-Use the **List** button in the toolbar (bulleted, numbered or task list) — it works on every selected line at once. Press <kbd>↩</kbd> for the next item and <kbd>↩</kbd> on an empty item to end the list. <kbd>Tab</kbd> moves an item in, <kbd>⇧</kbd> <kbd>Tab</kbd> moves it back. <kbd>⌫</kbd> at the start of an item moves a nested item out one level, then turns it into normal text.
+Use the **List** button in the toolbar (bulleted, numbered or task list) - it works on every selected line at once. Press <kbd>↩</kbd> for the next item and <kbd>↩</kbd> on an empty item to end the list. <kbd>Tab</kbd> moves an item in, <kbd>⇧</kbd> <kbd>Tab</kbd> moves it back. <kbd>⌫</kbd> at the start of an item moves a nested item out one level, then turns it into normal text.
 
 - Groceries
     - Apples
@@ -265,7 +265,7 @@ Use the **List** button in the toolbar (bulleted, numbered or task list) — it 
 
 ### Task lists
 
-Click a checkbox to tick a task off — click again to untick it. Done tasks turn grey, so open ones stand out. <kbd>↩</kbd> after a ticked task starts a new, unticked one. In the file it is `- [x]` or `- [ ]`:
+Click a checkbox to tick a task off - click again to untick it. Done tasks turn grey, so open ones stand out. <kbd>↩</kbd> after a ticked task starts a new, unticked one. In the file it is `- [x]` or `- [ ]`:
 
 - [x] Read the welcome
 - [x] Try a code block
@@ -277,7 +277,7 @@ Click a checkbox to tick a task off — click again to untick it. Done tasks tur
 
 > Simplicity is the ultimate sophistication.
 >
-> — often attributed to Leonardo da Vinci
+> - often attributed to Leonardo da Vinci
 
 Make one with the **Quote** button in the toolbar (it quotes every selected line; click again to unquote). <kbd>⌫</kbd> at the start of a quoted line removes the quote. Every quote has a **Copy** icon, just like code blocks.
 
@@ -300,8 +300,8 @@ A link is a word you can click to go somewhere: [the Marka website](https://gith
 
 | Icon | What it does |
 | :---: | --- |
-| <img src="assets/icons/content.png" alt="Content" width="18"> | **Content** — link to a heading of this document or a file next to it |
-| <img src="assets/icons/folder.png" alt="Choose File" width="18"> | **Choose File…** — link to any file on your Mac |
+| <img src="assets/icons/content.png" alt="Content" width="18"> | **Content** - link to a heading of this document or a file next to it |
+| <img src="assets/icons/folder.png" alt="Choose File" width="18"> | **Choose File…** - link to any file on your Mac |
 | <img src="assets/icons/open.png" alt="Open" width="18"> | **Open** the link (<kbd>⌘</kbd>-click works too) |
 | <img src="assets/icons/copy.png" alt="Copy" width="18"> | **Copy** the address |
 | <img src="assets/icons/unlink.png" alt="Remove link" width="18"> | **Remove** the link, keep the words |
@@ -317,14 +317,14 @@ Make a link: select a word and press <kbd>⌘</kbd> <kbd>K</kbd>, then type the 
 
 ## 5. Pictures
 
-Drag a picture onto the page, or use **Insert → Image…**. Marka shows the picture itself — the file name stays hidden, and the picture gets its own space on the page.
+Drag a picture onto the page, or use **Insert → Image…**. Marka shows the picture itself - the file name stays hidden, and the picture gets its own space on the page.
 
 **Try it:** click the Settings picture in [section 2](#2-settings). A card appears:
 
 | Icon | What it does |
 | :---: | --- |
-| <img src="assets/icons/options.png" alt="Options" width="18"> | **Options** — size (pixels or %), alignment, description and title |
-| <img src="assets/icons/folder.png" alt="Choose Image" width="18"> | **Choose Image…** — use a different picture |
+| <img src="assets/icons/options.png" alt="Options" width="18"> | **Options** - size (pixels or %), alignment, description and title |
+| <img src="assets/icons/folder.png" alt="Choose Image" width="18"> | **Choose Image…** - use a different picture |
 | <img src="assets/icons/open.png" alt="Open" width="18"> | **Open** the picture in Preview |
 | <img src="assets/icons/copy.png" alt="Copy" width="18"> | **Copy** its full path |
 | <img src="assets/icons/trash.png" alt="Remove" width="18"> | **Remove** the picture |
@@ -338,7 +338,7 @@ A picture that is missing shows a placeholder with its description:
 ![This picture is missing on purpose](assets/does-not-exist.png)
 
 > [!IMPORTANT]
-> When you add a picture from **outside** this document's folder (or Git repository), Marka asks: **Copy Image** puts a copy next to the document (in `assets/`), **Use Original Location** only links to it — and then it works only on this Mac.
+> When you add a picture from **outside** this document's folder (or Git repository), Marka asks: **Copy Image** puts a copy next to the document (in `assets/`), **Use Original Location** only links to it - and then it works only on this Mac.
 
 ## 6. Tables
 
@@ -396,7 +396,7 @@ This is how a note looks in Markdown:
 
 ## 8. Math with LaTeX
 
-Marka draws math formulas written in **LaTeX** — no internet, no browser. **Insert → Equation** and **Insert → Matrix** show ready-made examples. **Click a formula** to edit it, with a live preview; <kbd>⌘</kbd> <kbd>↩</kbd> applies.
+Marka draws math formulas written in **LaTeX** - no internet, no browser. **Insert → Equation** and **Insert → Matrix** show ready-made examples. **Click a formula** to edit it, with a live preview; <kbd>⌘</kbd> <kbd>↩</kbd> applies.
 
 ### Math inside a sentence
 Write it between single dollar signs. You type:
@@ -579,7 +579,7 @@ gantt
 
 ## 10. Emoji
 
-You can type emoji directly 🎉 — <kbd>⌃</kbd> <kbd>⌘</kbd> <kbd>Space</kbd> opens the macOS emoji picker.
+You can type emoji directly 🎉 - <kbd>⌃</kbd> <kbd>⌘</kbd> <kbd>Space</kbd> opens the macOS emoji picker.
 
 GitHub also understands **shortcodes** like `:rocket:`, `:white_check_mark:` or `:warning:`. Turn on *Show :shortcodes: as emoji* in Settings and these turn into pictures, while the file keeps the codes:
 
@@ -603,9 +603,9 @@ Press <kbd>⌘</kbd> <kbd>F</kbd> to find and <kbd>⌥</kbd> <kbd>⌘</kbd> <kbd
 
 An apple a day keeps the doctor away. Apple pie, apple juice and a pineapple. One more apple.
 
-- <kbd>⌘</kbd> <kbd>G</kbd> / <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>G</kbd> — next / previous match
-- **Replace** — swap this match and go to the next one
-- **All** — swap every match (one <kbd>⌘</kbd> <kbd>Z</kbd> undoes them all)
+- <kbd>⌘</kbd> <kbd>G</kbd> / <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>G</kbd> - next / previous match
+- **Replace** - swap this match and go to the next one
+- **All** - swap every match (one <kbd>⌘</kbd> <kbd>Z</kbd> undoes them all)
 
 <!-- pagebreak -->
 
@@ -642,7 +642,7 @@ In the opened `notes.md`, write something. The **Publish** button (the paper pla
 | **Diff** | Exactly what changed in each file |
 | **History** | The last three commits: who, when and what |
 
-Press **Publish** (<kbd>⌘</kbd> <kbd>↩</kbd>). Marka saves, commits — and pushes, when the repository has a shared place called `origin`.
+Press **Publish** (<kbd>⌘</kbd> <kbd>↩</kbd>). Marka saves, commits - and pushes, when the repository has a shared place called `origin`.
 
 ### Optional: connect it to GitHub
 
@@ -664,7 +664,7 @@ From now on, **Publish** also sends your changes to GitHub. When you open a file
 
 ## 13. When other apps change a file
 
-When another app, an AI assistant or `git pull` changes an open file, Marka shows the new text right away — without moving where you are reading. This is **Auto-load** in Settings.
+When another app, an AI assistant or `git pull` changes an open file, Marka shows the new text right away - without moving where you are reading. This is **Auto-load** in Settings.
 
 ### Try it
 
@@ -682,19 +682,19 @@ If you were editing the same file at that moment, Marka asks which version to ke
 
 The white sheets are real **A4 pages**: what you see is exactly what prints and what goes into a PDF.
 
-- **Thumbnails** on the left (<kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>S</kbd>) — click one to jump to that page.
-- **Page** button in the toolbar (<kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>G</kbd>) — jump to a page, see words, characters, reading time and your word goal.
-- **Content** button next to it (<kbd>⌘</kbd> <kbd>L</kbd>) — every heading and the files next to this document; type to filter, <kbd>↩</kbd> to go there.
-- **Zoom** — the zoom menu, <kbd>⌘</kbd> <kbd>+</kbd> / <kbd>⌘</kbd> <kbd>-</kbd>, <kbd>⌘</kbd> <kbd>0</kbd> for 100 %, *Auto* fits the page to the window.
-- **Export PDF** — <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>E</kbd>. Links stay clickable in the PDF.
-- **Print** — <kbd>⌘</kbd> <kbd>P</kbd>.
-- **Share** — the share button in the toolbar sends this `.md` file by AirDrop, Mail, Messages…
+- **Thumbnails** on the left (<kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>S</kbd>) - click one to jump to that page.
+- **Page** button in the toolbar (<kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>G</kbd>) - jump to a page, see words, characters, reading time and your word goal.
+- **Content** button next to it (<kbd>⌘</kbd> <kbd>L</kbd>) - every heading and the files next to this document; type to filter, <kbd>↩</kbd> to go there.
+- **Zoom** - the zoom menu, <kbd>⌘</kbd> <kbd>+</kbd> / <kbd>⌘</kbd> <kbd>-</kbd>, <kbd>⌘</kbd> <kbd>0</kbd> for 100 %, *Auto* fits the page to the window.
+- **Export PDF** - <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>E</kbd>. Links stay clickable in the PDF.
+- **Print** - <kbd>⌘</kbd> <kbd>P</kbd>.
+- **Share** - the share button in the toolbar sends this `.md` file by AirDrop, Mail, Messages…
 
-A forced page break is the line `<!-- pagebreak -->` — the [Git section](#12-git-and-publish) starts on a new page because of one.
+A forced page break is the line `<!-- pagebreak -->` - the [Git section](#12-git-and-publish) starts on a new page because of one.
 
 ## 15. PDF from Terminal
 
-Marka can make a PDF without opening a window — handy for scripts. Click the **Run in Terminal** icon: the PDF of this tutorial appears on your Desktop, and Terminal shows how many pages and words it has.
+Marka can make a PDF without opening a window - handy for scripts. Click the **Run in Terminal** icon: the PDF of this tutorial appears on your Desktop, and Terminal shows how many pages and words it has.
 
 ```bash
 /Applications/Marka.app/Contents/MacOS/Marka -pdf Marka.md ~/Desktop/Marka-tutorial.pdf

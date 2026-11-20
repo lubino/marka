@@ -1,6 +1,6 @@
 # Marka Command Line
 
-Marka can turn a Markdown file into a PDF straight from Terminal — no window opens. The PDF looks exactly like **File → Export PDF…** in the app: same A4 pages, fonts, margins, page numbers, tables, images, math and diagrams, using your Marka Settings.
+Marka can turn a Markdown file into a PDF straight from Terminal - no window opens. The PDF looks exactly like **File → Export PDF…** in the app: same A4 pages, fonts, margins, page numbers, tables, images, math and diagrams, using your Marka Settings.
 
 ## Export a PDF
 

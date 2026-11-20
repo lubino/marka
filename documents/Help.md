@@ -4,7 +4,7 @@
 
 Marka is a writing app for your Mac. You write like in Pages or Word: bold looks bold, a heading looks like a heading, a table looks like a table.
 
-Behind the scenes Marka saves a **Markdown** file (`.md`). Markdown is plain text with a few simple signs, like `**bold**` or `# Heading`. Almost every tool understands it — GitHub, notes apps, websites, AI assistants — so your writing never gets locked inside one app.
+Behind the scenes Marka saves a **Markdown** file (`.md`). Markdown is plain text with a few simple signs, like `**bold**` or `# Heading`. Almost every tool understands it - GitHub, notes apps, websites, AI assistants - so your writing never gets locked inside one app.
 
 Think of it like this: **you see the finished cake, the file keeps the recipe.**
 ![preview](assets/preview.png)
@@ -42,7 +42,7 @@ Click a button again to take the formatting away.
 
 ## Links
 
-A link is a word you can click to go somewhere — a website, another file, or a heading in this document.
+A link is a word you can click to go somewhere - a website, another file, or a heading in this document.
 
 1. Select a word and press ⌘K.
 2. A small card appears under the word. Type the address there and press ↩.
@@ -51,13 +51,13 @@ The card's buttons, from the left:
 
 | Button | What it does |
 | --- | --- |
-| Content (list) | Pick a heading of this document or a file next to it — Marka writes the address for you |
+| Content (list) | Pick a heading of this document or a file next to it - Marka writes the address for you |
 | Folder | Pick any file on your Mac |
 | Arrow | Open the link |
 | Two pages | Copy the address |
 | Broken chain | Remove the link but keep the word |
 
-**How addresses work.** An address starting with `https://` is a website. Anything else is a file *next to your document* — `notes.md` means "the file notes.md in the same folder". `#setup` means "the heading called Setup in this document".
+**How addresses work.** An address starting with `https://` is a website. Anything else is a file *next to your document* - `notes.md` means "the file notes.md in the same folder". `#setup` means "the heading called Setup in this document".
 
 ⌘-click a link to open it. A link to a `.md` file that does not exist yet creates it for you.
 
@@ -67,8 +67,8 @@ Drag a picture onto the page, or use **Insert → Image…**. Marka shows the pi
 
 **Picture from somewhere else?** If the picture is not in the same folder (or Git repository) as your document, Marka asks:
 
-- **Copy Image** — puts a copy next to your document (in an `assets` folder). Choose this almost always: the picture then travels with your document.
-- **Use Original Location** — points to the picture where it is. Careful: it only works on this Mac. Anyone else will see a broken picture.
+- **Copy Image** - puts a copy next to your document (in an `assets` folder). Choose this almost always: the picture then travels with your document.
+- **Use Original Location** - points to the picture where it is. Careful: it only works on this Mac. Anyone else will see a broken picture.
 
 **Click a picture** for its card: change the picture, open it, copy its location, remove it, or press the **gear** to set its size (in pixels or %), alignment (left, center, right) and a description for people who cannot see it.
 
@@ -76,7 +76,7 @@ Drag a picture onto the page, or use **Insert → Image…**. Marka shows the pi
 
 Tables look like on GitHub: a bold first row and thin lines.
 
-- **Make one:** the Table button in the toolbar shows ready-made shapes — click one.
+- **Make one:** the Table button in the toolbar shows ready-made shapes - click one.
 - **Type in it:** click a cell and write. Tab goes to the next cell, ↩ to the cell below. At the end of the table they add a new row.
 - **Change its shape:** while you are in a cell, a blue handle appears next to the row and above the column. Drag a handle to move that row or column. Click a green **+** to add one, a red **−** to delete one.
 - **Line up a column:** Format → Table → Align Column Left / Center / Right.
@@ -86,7 +86,7 @@ Tables look like on GitHub: a bold first row and thin lines.
 
 **Insert** menu → Equation, Matrix, Flowchart, Left-to-right flow, Sequence Diagram or Pie chart. A small window shows examples; click one and it lands in your document as a finished drawing.
 
-Click the drawing to change it. You will see its recipe on the left (LaTeX for math, Mermaid for diagrams) and a live preview — change a word, watch the drawing change. ⌘↩ or clicking away saves it.
+Click the drawing to change it. You will see its recipe on the left (LaTeX for math, Mermaid for diagrams) and a live preview - change a word, watch the drawing change. ⌘↩ or clicking away saves it.
 
 For math inside a sentence, write it between dollar signs: `$a^2 + b^2 = c^2$`.
 
@@ -96,7 +96,7 @@ For math inside a sentence, write it between dollar signs: `$a^2 + b^2 = c^2$`.
 
 ## Emoji
 
-**Edit → Replace Emojis…** finds codes like `:rocket:` or `:)` and turns them into real emoji 🚀 🙂 — one at a time with **Replace**, or all at once with **All**.
+**Edit → Replace Emojis…** finds codes like `:rocket:` or `:)` and turns them into real emoji 🚀 🙂 - one at a time with **Replace**, or all at once with **All**.
 
 In Settings you can also let Marka *show* `:rocket:` codes as emoji while the file keeps the code (GitHub does the same).
 
@@ -122,10 +122,10 @@ You can turn this off in Settings → Auto-load.
 
 1. Write as usual. The **Publish** button (paper plane) lights up when your document is part of a Git repository.
 2. Click **Publish**. You see:
-   - **Message** — write what you changed, in one short sentence.
-   - **Files** — every changed file Marka will publish, with how many lines were added (green) or removed (red).
-   - **Diff** — exactly what changed: green lines are new, red lines are gone.
-   - **History** — the last three publishes: who, when and what.
+   - **Message** - write what you changed, in one short sentence.
+   - **Files** - every changed file Marka will publish, with how many lines were added (green) or removed (red).
+   - **Diff** - exactly what changed: green lines are new, red lines are gone.
+   - **History** - the last three publishes: who, when and what.
 3. Press **Publish** (or ⌘↩). Marka saves, commits and pushes.
 
 Good to know:
@@ -146,13 +146,13 @@ Font and size, page margins, page numbers, Autosave, Auto-load, dark paper, word
 
 ## PDF from Terminal
 
-Marka can also make a PDF without opening a window — handy for scripts:
+Marka can also make a PDF without opening a window - handy for scripts:
 
 ```bash
 /Applications/Marka.app/Contents/MacOS/Marka -pdf notes.md notes.pdf
 ```
 
-It prints how many pages, words, headings, images and so on the document has. All the details — a short `marka` command, exit codes, exporting a whole folder — are in **cli.md** (on GitHub: https://github.com/lubino/marka/blob/main/documents/cli.md).
+It prints how many pages, words, headings, images and so on the document has. All the details - a short `marka` command, exit codes, exporting a whole folder - are in **cli.md** (on GitHub: https://github.com/lubino/marka/blob/main/documents/cli.md).
 
 ## More
 

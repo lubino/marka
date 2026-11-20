@@ -1,24 +1,24 @@
-# Marka — a free, native WYSIWYG Markdown editor for Mac
+# Marka - native Markdown editor for Mac
 
-**Marka** is a free, open-source Markdown editor for macOS. You write like in Word or Pages — no visible `**` or `#` — while the file stays clean GitHub-Flavored Markdown. Your document is laid out on real A4 pages, exactly as it will print or export to PDF.
+**Marka** is a free, open-source Markdown editor for macOS. You write like in Word or Pages - no visible `**` or `#` - while the file stays clean GitHub-Flavored Markdown. Your document is laid out on real A4 pages, exactly as it will print or export to PDF.
 
 Native Swift and AppKit: no Electron, no web view, a ~5 MB download.
 
 [**⬇ Download Marka for macOS**](https://github.com/lubino/marka/releases/latest) · macOS 14 Sonoma or newer · Apple Silicon and Intel · MIT license
 
 > [!TIP]
-> **New to Marka? Start with the tutorial.** [**Marka.md**](documents/Marka.md) is a hands-on tour of every feature — code blocks you can run, tables, pictures, math, diagrams, emoji, Git — and you learn Marka in a few minutes by trying things out in it. Open it **in Marka**: it is in the **Marka Tutorial** folder of the downloaded disk image, and in the app under **Help → Marka Tutorial**.
+> **New to Marka? Start with the tutorial.** [**Marka.md**](documents/Marka.md) is a hands-on tour of every feature - code blocks you can run, tables, pictures, math, diagrams, emoji, Git - and you learn Marka in a few minutes by trying things out in it. Open it **in Marka**: it is in the **Marka Tutorial** folder of the downloaded disk image, and in the app under **Help → Marka Tutorial**.
 
 ![Marka editing a Markdown document on A4 pages](assets/preview.png)
 
 ## Why Marka
 
 - **WYSIWYG Markdown.** Formatting markers stay hidden while you write; `⌘/` shows the raw source any time.
-- **Your file stays yours.** Saving never rewrites lines you did not touch, and an unedited file stays byte-for-byte identical — clean diffs in Git.
+- **Your file stays yours.** Saving never rewrites lines you did not touch, and an unedited file stays byte-for-byte identical - clean diffs in Git.
 - **Pages you can print.** Live A4 pages with page breaks, thumbnails and page numbers; PDF export and print match the screen exactly, links included.
 - **Math and diagrams without a browser.** LaTeX math (`$…$`, `$$…$$`) and Mermaid flowcharts, sequence diagrams and pie charts, typeset natively.
 - **Tables that feel like Pages.** GitHub-style tables with in-place editing, drag-to-reorder rows and columns, and one-click insert or delete.
-- **Publish to Git in one click.** When your document lives in a Git repository, **Publish** commits it — together with the other open documents of that repository — and pushes to `origin`.
+- **Publish to Git in one click.** When your document lives in a Git repository, **Publish** commits it - together with the other open documents of that repository - and pushes to `origin`.
 - **A real Mac app.** Tabs, Liquid Glass on macOS 26, dark mode, the system share sheet, find and replace, and syntax-highlighted code in a ~5 MB app.
 
 Looking for a **Typora alternative**, a native **Obsidian**-style editor for single files, or a modern successor to **MacDown**? Marka is free, open source and native.
@@ -83,7 +83,7 @@ The saved file is ordinary UTF-8 GitHub-Flavored Markdown. Opening and saving wi
 - Headings (GitHub-style rule under Heading 1 and 2), bold, italic, strikethrough, lists, task lists, quotes, images, horizontal rules, and manual page breaks (`<!-- pagebreak -->`).
 - Lists look like GitHub's: bullets by level, numbers, clickable checkboxes (done tasks dim), also inside quotes. The List pull-down (bulleted / numbered / task) and the Quote button work on every selected line; ↩ continues a list or quote, ⌫ at an item's start moves it out a level or back to text.
 - The format toolbar also works inside links and while editing a table cell.
-- **Text effects** (toolbar pull-down next to Strike, and the Format menu): underline, superscript, subscript and keyboard keys — written as GitHub-safe `<ins>`, `<sup>`, `<sub>`, `<kbd>`, shown formatted with the tags hidden. (Text colour and citations are not possible on GitHub, so Marka does not offer them.)
+- **Text effects** (toolbar pull-down next to Strike, and the Format menu): underline, superscript, subscript and keyboard keys - written as GitHub-safe `<ins>`, `<sup>`, `<sub>`, `<kbd>`, shown formatted with the tags hidden. (Text colour and citations are not possible on GitHub, so Marka does not offer them.)
 - **GitHub alerts**: `> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]` show with GitHub's coloured bar, icon and title (Insert → Note … Caution). Every quote gets GitHub's left bar.
 - **Emoji**: Edit → Replace Emojis… (also the Emoji option in Find & Replace) steps through `:shortcodes:` and emoticons like `:)` and `<3` and replaces them with real emoji, one by one or all. Settings can also show `:shortcodes:` as emoji, like GitHub (off by default).
 - Bold and italic can wrap links and inline code (`**[readme](README.md)**`, `**`Marka.dmg`**`); inline code gets GitHub's rounded box.
@@ -93,11 +93,11 @@ The saved file is ordinary UTF-8 GitHub-Flavored Markdown. Opening and saving wi
 
 **Links**
 
-- Word-style links: only the blue label shows; a compact card shows the address with icon buttons — **Overview** (link to a heading or a file next to the document), **Choose File…** (point the link at a file on disk), **Open**, **Copy** and **Remove Link** (keeps the text). `⌘`-click opens.
+- Word-style links: only the blue label shows; a compact card shows the address with icon buttons - **Overview** (link to a heading or a file next to the document), **Choose File…** (point the link at a file on disk), **Open**, **Copy** and **Remove Link** (keeps the text). `⌘`-click opens.
 - Links to headings use GitHub's anchors (`[Setup](#setup)`) and jump there; `notes.md#setup` opens the file. The toolbar's **Content** button (next to the page number, `⌘L`) and the page-number popover open the same overview for quick navigation to any heading or file.
-- Images look like on GitHub: only the picture shows (no file name or Markdown), at its natural size but never wider than the page or taller than a page, in its own space — text never runs under it. A line of several images (badges) puts them side by side; an image inside a sentence appears below that line; web images load in the background; a missing image shows a small placeholder with its alt text. Images are in PDF export and print.
+- Images look like on GitHub: only the picture shows (no file name or Markdown), at its natural size but never wider than the page or taller than a page, in its own space - text never runs under it. A line of several images (badges) puts them side by side; an image inside a sentence appears below that line; web images load in the background; a missing image shows a small placeholder with its alt text. Images are in PDF export and print.
 - Click an image for a card like the link card: its path or address, **Options** (gear: alt text, title, width and height in px or %, alignment), **Choose Image…**, **Open**, **Copy** (full path) and **Remove**. Size and alignment are saved as GitHub's `<img width align>` (centred: `<p align="center">`); plain images stay `![alt](path)`.
-- Images (toolbar, Format → Image…, drag and drop) and files chosen for a link: a file already inside the document's Git repository — or, without Git, its folder — is referenced with a relative path (and starts being tracked by Git). A file from elsewhere asks first: **copy** it next to the document (you can edit the name, images default to `assets/`) or **use the original location**, with a warning that such a reference breaks on other computers.
+- Images (toolbar, Format → Image…, drag and drop) and files chosen for a link: a file already inside the document's Git repository - or, without Git, its folder - is referenced with a relative path (and starts being tracked by Git). A file from elsewhere asks first: **copy** it next to the document (you can edit the name, images default to `assets/`) or **use the original location**, with a warning that such a reference breaks on other computers.
 - Links to Markdown files open in a new Marka tab. A link to a Markdown file that does not exist yet creates it (empty) next to the document.
 
 **Code**
@@ -109,7 +109,7 @@ The saved file is ordinary UTF-8 GitHub-Flavored Markdown. Opening and saving wi
 
 - Math in LaTeX syntax, typeset natively (no web view): inline `$e^{i\pi}+1=0$`, and display blocks with `$$ … $$` or a ```` ```math ```` fence. Supports fractions, roots, sub/superscripts, sums/integrals/limits, Greek letters and common symbols, `\left…\right`, matrices (`pmatrix`, `bmatrix`, …), `cases`, `aligned`, accents, `\text`, `\mathbf`, `\mathbb`, `\mathcal`. Unknown commands show in red.
 - Mermaid diagrams in ```` ```mermaid ```` fences, drawn natively: flowcharts (`graph` / `flowchart`, all directions, common node shapes, labelled solid / dotted / thick links), sequence diagrams (participants, actors, messages, notes) and pie charts. Other Mermaid diagram types show a notice instead of a drawing.
-- The **Insert** menu opens a gallery of ready-made examples at the cursor — Table, Image…, Code Block, Equation, Matrix, Flowchart, Left-to-right flow, Sequence Diagram and Pie chart — drawn exactly as they will appear; one click inserts it.
+- The **Insert** menu opens a gallery of ready-made examples at the cursor - Table, Image…, Code Block, Equation, Matrix, Flowchart, Left-to-right flow, Sequence Diagram and Pie chart - drawn exactly as they will appear; one click inserts it.
 - Click a drawn equation or diagram to edit its source with a live preview. Place the cursor in inline math to edit it in place. Drawings move to the next page rather than crossing a page break, and appear in PDF export and print.
 
 **Tables**
@@ -118,20 +118,20 @@ The saved file is ordinary UTF-8 GitHub-Flavored Markdown. Opening and saving wi
 - Cells hold inline Markdown (bold, italic, `code`, links) and are edited WYSIWYG, like the rest of the document. Arrow keys, Tab and Return move between cells; Tab / Return add a row at the end.
 - With the cursor in a cell, a blue grip appears beside its row and above its column: drag it to move the row or column, use the green **+** on either side to insert one there, or the red **−** to delete it. The same commands are in Format → Table and the cell's right-click menu.
 - Long tables continue on the next page with the header repeated.
-- Column alignment (`:---`, `:---:`, `---:`) is shown and set from Format → Table → Align Column Left / Center / Right; `\|` puts a pipe inside a cell (typed pipes are escaped for you) — exactly what GitHub tables support.
+- Column alignment (`:---`, `:---:`, `---:`) is shown and set from Format → Table → Align Column Left / Center / Right; `\|` puts a pipe inside a cell (typed pipes are escaped for you) - exactly what GitHub tables support.
 
 **Pages, export, print**
 
-- Live A4 pages; what you see is what PDF and print produce. Pages follow the content — no empty last page.
+- Live A4 pages; what you see is what PDF and print produce. Pages follow the content - no empty last page.
 - Export PDF (`⇧⌘E`) keeps links clickable. File → Print… (`⌘P`) and the toolbar Print button open the standard print dialog.
 - Share the document's `.md` file with the standard macOS share button or File → Share.
 
 **Git: Publish**
 
-- When the open document is tracked by Git, the toolbar **Publish** button (and File → Publish…) is enabled. It saves the open documents, then shows a popover with tabs: **Message** (a suggested commit message), **Files** (every changed file of the open documents in that repository, with added / removed line counts), **Diff** (coloured per file — click a file to see it) and **History** (the last three commits, who made them and when).
-- **Publish** (`⌘↩`) commits exactly those files — other work you staged elsewhere stays staged — and pushes to `origin` (setting the upstream on the first push). Without an `origin` remote it only commits.
+- When the open document is tracked by Git, the toolbar **Publish** button (and File → Publish…) is enabled. It saves the open documents, then shows a popover with tabs: **Message** (a suggested commit message), **Files** (every changed file of the open documents in that repository, with added / removed line counts), **Diff** (coloured per file - click a file to see it) and **History** (the last three commits, who made them and when).
+- **Publish** (`⌘↩`) commits exactly those files - other work you staged elsewhere stays staged - and pushes to `origin` (setting the upstream on the first push). Without an `origin` remote it only commits.
 - If the commit or push fails, Marka says so and leaves the fix to your usual Git tool; **Show more** shows Git's output. A failed push keeps the commit.
-- When you open a tracked file, Marka checks in the background whether someone published a newer version of it. If so, it asks whether to update (Settings → Git can update automatically instead). Updating fast-forwards your copy like `git pull --ff-only`; if that is not possible — unpublished commits of your own, or conflicting edits — Marka leaves everything as it was and explains why.
+- When you open a tracked file, Marka checks in the background whether someone published a newer version of it. If so, it asks whether to update (Settings → Git can update automatically instead). Updating fast-forwards your copy like `git pull --ff-only`; if that is not possible - unpublished commits of your own, or conflicting edits - Marka leaves everything as it was and explains why.
 - Files your documents link to or show as images (`[notes](notes/plan.md)`, `![](assets/chart.png)`) that are inside the repository but not tracked yet are added to Git when you click Publish, so they are listed as **Added** and published together with the document.
 - New files Marka creates inside a repository are added to Git right away: documents saved for the first time, Markdown files created from a link, and images dropped into `assets/` (ignored paths stay ignored).
 - Marka uses the `git` you already have (Command Line Tools or Homebrew) with your existing credentials and never asks for passwords. Settings → Git turns the feature off; it is unavailable when Git is not installed.
@@ -149,7 +149,7 @@ The saved file is ordinary UTF-8 GitHub-Flavored Markdown. Opening and saving wi
 
 ## Command line: Markdown → PDF
 
-Marka can export a Markdown file to PDF from Terminal — same pages and fonts as the app, no window — and prints the counts from the Page popover:
+Marka can export a Markdown file to PDF from Terminal - same pages and fonts as the app, no window - and prints the counts from the Page popover:
 
 ```bash
 /Applications/Marka.app/Contents/MacOS/Marka -pdf README.md README.pdf
@@ -191,10 +191,10 @@ Everything to read is in [`documents/`](documents/):
 
 | Document | Read it when… |
 | --- | --- |
-| [**Marka.md** — the tutorial](documents/Marka.md) | You are new to Marka. A hands-on tour of every feature with examples to click, run and edit — open it in Marka (Help → Marka Tutorial) and learn by doing. |
-| [**Help.md** — what Marka is and how to use it](documents/Help.md) | You want the explanations: when to use Marka, how pictures, links, tables, Git and Publish work, explained simply. Also Help → Marka Help. |
-| [**Shortcuts.md** — every keyboard shortcut](documents/Shortcuts.md) | You want to work faster: all shortcuts on one page, by topic. Also Help → Keyboard Shortcuts. |
-| [**cli.md** — Marka on the command line](documents/cli.md) | You want PDFs from Terminal or scripts: `Marka -pdf in.md out.pdf`, a short `marka` command, exit codes, exporting a whole folder. |
+| [**Marka.md** - the tutorial](documents/Marka.md) | You are new to Marka. A hands-on tour of every feature with examples to click, run and edit - open it in Marka (Help → Marka Tutorial) and learn by doing. |
+| [**Help.md** - what Marka is and how to use it](documents/Help.md) | You want the explanations: when to use Marka, how pictures, links, tables, Git and Publish work, explained simply. Also Help → Marka Help. |
+| [**Shortcuts.md** - every keyboard shortcut](documents/Shortcuts.md) | You want to work faster: all shortcuts on one page, by topic. Also Help → Keyboard Shortcuts. |
+| [**cli.md** - Marka on the command line](documents/cli.md) | You want PDFs from Terminal or scripts: `Marka -pdf in.md out.pdf`, a short `marka` command, exit codes, exporting a whole folder. |
 
 Contributors: [AGENTS.md](AGENTS.md) explains how Marka is built and its rules.
 
